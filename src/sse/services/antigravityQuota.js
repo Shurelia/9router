@@ -6,7 +6,50 @@
 
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { getAntigravityUsage } from "open-sse/services/usage/google.js";
+import { updateProviderConnection } from "@/lib/localDb";
+import { getProviderModels } from "open-sse/config/providerModels.js";
 import * as log from "../utils/logger.js";
+
+// Models registered for Antigravity (fallback if registry empty)
+const ANTIGRAVITY_MODELS_FALLBACK = [
+  "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+  "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+  "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+  "gemini-3-flash-agent", "gemini-3.5-flash-low", "gemini-3.5-flash-extra-low",
+  "gemini-pro-agent", "gemini-3.1-pro-low",
+  "claude-sonnet-4-6", "claude-opus-4-6-thinking",
+  "gpt-oss-120b-medium", "gemini-3-flash",
+  "gemini-3.1-flash-image", "gemini-3-pro-image",
+];
+
+export async function syncAntigravityQuotaLocksToDb(connectionId, quotas) {
+  if (!connectionId || !quotas || typeof quotas !== "object") return;
+  const now = Date.now();
+  const models = (getProviderModels("antigravity") || []).map(m => m.id);
+  const targetModels = models.length > 0 ? models : ANTIGRAVITY_MODELS_FALLBACK;
+  const updates = {};
+
+  for (const m of targetModels) {
+    const q = findAntigravityQuota(quotas, m);
+    if (!q) continue;
+    const isExhausted = (q.remainingPercentage !== undefined && q.remainingPercentage <= 0) ||
+                        (q.remaining !== undefined && q.remaining <= 0);
+    const resetTimeMs = q.resetAt ? new Date(q.resetAt).getTime() : 0;
+    if (isExhausted && resetTimeMs > now) {
+      updates[`modelLock_${m}`] = new Date(resetTimeMs).toISOString();
+    } else if (q.remainingPercentage > 0 || (resetTimeMs && resetTimeMs <= now)) {
+      updates[`modelLock_${m}`] = null;
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    try {
+      await updateProviderConnection(connectionId, updates);
+    } catch (err) {
+      log.warn("AG_QUOTA", `${connectionId.slice(0, 8)} | failed to sync model locks to db: ${err.message}`);
+    }
+  }
+}
 
 // In-memory cache: connectionId → { [modelId]: { remainingPercentage, resetAt } }
 const quotaCache = new Map();
@@ -122,6 +165,8 @@ async function _doRefresh(connectionId, accessToken, providerSpecificData, now) 
     // Strike blocks are re-asserted after every refresh so an optimistic
     // upstream reading cannot resurrect a pair we just circuit-broke.
     quotaCache.set(connectionId, applyActiveStrikeBlocks(connectionId, usage.quotas));
+    // Sync model locks directly to DB so zero-quota models are immediately skipped without probing
+    syncAntigravityQuotaLocksToDb(connectionId, usage.quotas);
 
     return usage.quotas;
   } catch (e) {
