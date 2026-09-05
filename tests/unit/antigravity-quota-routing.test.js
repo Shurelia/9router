@@ -27,7 +27,7 @@ vi.mock("open-sse/services/usage/google.js", () => ({
 }));
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 
-const { getAntigravityQuotaCache, handleAntigravityQuotaError, refreshAntigravityQuota } = await import("@/sse/services/antigravityQuota.js");
+const { getAntigravityQuotaCache, handleAntigravityQuotaError, refreshAntigravityQuota, findAntigravityQuota } = await import("@/sse/services/antigravityQuota.js");
 const { getProviderCredentials } = await import("@/sse/services/auth.js");
 
 const MODEL = "claude-opus-4-6-thinking";
@@ -165,6 +165,42 @@ describe("Antigravity quota-aware routing", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       await refreshAntigravityQuota("ag-failed-refresh", "token", {});
       expect(mocks.getAntigravityUsage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("findAntigravityQuota matches models by family or alias", () => {
+    const quotas = {
+      "gemini-3-flash-agent": { displayName: "Gemini 3 Flash (High)", remainingPercentage: 0, resetAt: FUTURE_RESET },
+      "gemini-pro-agent": { displayName: "Gemini Pro", remainingPercentage: 50, resetAt: FUTURE_RESET },
+      "claude-sonnet-4-6": { displayName: "Claude Sonnet 4.6", remainingPercentage: 10, resetAt: FUTURE_RESET },
+      "claude-opus-4-6-thinking": { displayName: "Claude Opus 4.6 (Thinking)", remainingPercentage: 0, resetAt: FUTURE_RESET },
+    };
+
+    expect(findAntigravityQuota(quotas, "gemini-3.8-flash-high")).toBe(quotas["gemini-3-flash-agent"]);
+    expect(findAntigravityQuota(quotas, "ag/gemini-3.7-flash-high")).toBe(quotas["gemini-3-flash-agent"]);
+    expect(findAntigravityQuota(quotas, "gemini-3.1-pro-low")).toBe(quotas["gemini-pro-agent"]);
+    expect(findAntigravityQuota(quotas, "claude-sonnet-4-6")).toBe(quotas["claude-sonnet-4-6"]);
+    expect(findAntigravityQuota(quotas, "claude-opus-4-6-thinking")).toBe(quotas["claude-opus-4-6-thinking"]);
+  });
+
+  it("skips account when model quota is exhausted via family matching", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
+    mocks.getProviderConnections.mockResolvedValue([
+      { id: "ag-a", email: "a@example.com", isActive: true },
+      { id: "ag-b", email: "b@example.com", isActive: true },
+    ]);
+    getAntigravityQuotaCache().set("ag-a", {
+      "gemini-3-flash-agent": { displayName: "Gemini 3 Flash (High)", remainingPercentage: 0, resetAt: FUTURE_RESET },
+    });
+
+    try {
+      await expect(getProviderCredentials("antigravity", null, "gemini-3.8-flash-high")).resolves.toMatchObject({
+        connectionId: "ag-b",
+        connectionName: "b@example.com",
+      });
     } finally {
       vi.useRealTimers();
     }

@@ -5,7 +5,7 @@ import { classify429 } from "open-sse/utils/classify429.js";
 import { resolveAntigravityProxyConfig } from "open-sse/utils/proxyFetch.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS, AI_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers.js";
-import { getAntigravityQuotaCache } from "./antigravityQuota.js";
+import { getAntigravityQuotaCache, findAntigravityQuota } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
 
 // Re-export the internal-trust gate so handlers can import it alongside the
@@ -116,11 +116,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (isModelLockActive(c, model)) return false;
       // Antigravity: skip if live quota exhausted for this model
       if (isAntigravity && model && antigravityQuotaCache) {
-        const quota = antigravityQuotaCache.get(c.id)?.[model];
-        if (quota && quota.remainingPercentage <= 0 && quota.resetAt && new Date(quota.resetAt).getTime() > Date.now()) {
-          const account = c.id?.slice(0, 8) || "unknown";
-          log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} — skip upstream until ${quota.resetAt}`);
-          return false;
+        const quotas = antigravityQuotaCache.get(c.id);
+        const quota = findAntigravityQuota(quotas, model);
+        const isExhausted = quota && (quota.remainingPercentage <= 0 || quota.remaining <= 0);
+        if (isExhausted) {
+          const resetTimeMs = quota.resetAt ? new Date(quota.resetAt).getTime() : 0;
+          if (resetTimeMs > Date.now()) {
+            const account = c.id?.slice(0, 8) || "unknown";
+            log.info("AG_QUOTA", `${account} | CACHE_BLOCK ${model} (${quota.displayName || "quota"} 0%) — skip upstream until ${quota.resetAt}`);
+            return false;
+          }
         }
       }
       return true;
@@ -142,7 +147,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const expiries = lockedConns.flatMap(c => { const t = getEarliestModelLockUntil(c); return t ? [t] : []; });
       if (isAntigravity && model && antigravityQuotaCache) {
         connections.forEach((c) => {
-          const resetAt = antigravityQuotaCache.get(c.id)?.[model]?.resetAt;
+          const quota = findAntigravityQuota(antigravityQuotaCache.get(c.id), model);
+          const resetAt = quota?.resetAt;
           if (resetAt && new Date(resetAt).getTime() > Date.now()) expiries.push(resetAt);
         });
       }
