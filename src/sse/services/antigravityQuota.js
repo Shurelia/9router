@@ -37,7 +37,11 @@ export async function syncAntigravityQuotaLocksToDb(connectionId, quotas) {
     const resetTimeMs = q.resetAt ? new Date(q.resetAt).getTime() : 0;
     if (isExhausted && resetTimeMs > now) {
       updates[`modelLock_${m}`] = new Date(resetTimeMs).toISOString();
-    } else if (q.remainingPercentage > 0 || (resetTimeMs && resetTimeMs <= now)) {
+    } else if (
+      (q.remainingPercentage !== undefined && q.remainingPercentage > 0) ||
+      (q.remaining !== undefined && q.remaining > 0) ||
+      (resetTimeMs && resetTimeMs <= now)
+    ) {
       updates[`modelLock_${m}`] = null;
     }
   }
@@ -182,6 +186,8 @@ async function _doRefresh(connectionId, accessToken, providerSpecificData, now) 
  *   completely skipping model version strings for robust checking.
  * - Anything with "pro" matches "Pro" quota (gemini-pro-agent, etc.)
  * - Claude Sonnet / Opus matches their respective quotas.
+ * - Supports weekly family quotas (gemini_weekly, claude_gpt_weekly) for Free tier
+ *   and exhausted weekly limits.
  * - Fallback to exact modelKey or matching displayName.
  *
  * @param {object|null|undefined} quotas - The quotas map from Antigravity usage API
@@ -195,64 +201,123 @@ export function findAntigravityQuota(quotas, model) {
   const cleanModel = rawModel.replace(/^(ag|antigravity)\//i, "");
   const modelLower = cleanModel.toLowerCase();
 
+  // Find family weekly quota
+  let weeklyQuota = null;
+  if (modelLower.startsWith("gemini") || modelLower.includes("gemini")) {
+    weeklyQuota = quotas["gemini_weekly"] || null;
+  } else if (
+    modelLower.startsWith("claude") || modelLower.includes("claude") ||
+    modelLower.includes("sonnet") || modelLower.includes("opus") ||
+    modelLower.startsWith("gpt") || modelLower.includes("gpt") || modelLower.includes("oss")
+  ) {
+    weeklyQuota = quotas["claude_gpt_weekly"] || null;
+  }
+
+  // If weekly quota is exhausted, the entire model family cannot be used
+  const isWeeklyExhausted = weeklyQuota && (
+    (weeklyQuota.remainingPercentage !== undefined && weeklyQuota.remainingPercentage <= 0) ||
+    (weeklyQuota.remaining !== undefined && weeklyQuota.remaining <= 0)
+  );
+  if (isWeeklyExhausted) {
+    return weeklyQuota;
+  }
+
+  // Find model-specific or group quota
+  let modelQuota = null;
+
   // 1. Direct key match if present
-  if (quotas[cleanModel]) return quotas[cleanModel];
-  if (quotas[rawModel]) return quotas[rawModel];
+  if (quotas[cleanModel]) modelQuota = quotas[cleanModel];
+  else if (quotas[rawModel]) modelQuota = quotas[rawModel];
 
   // 2. Flash group: anything with "flash" (gemini-3.8-flash-high, gemini-3.7-flash-high, etc.)
   // syncs with "Flash (High)" quota (upstream key gemini-3-flash-agent, or displayName with "flash" and "high")
-  if (modelLower.includes("flash")) {
-    if (quotas["gemini-3-flash-agent"]) return quotas["gemini-3-flash-agent"];
-    for (const [key, q] of Object.entries(quotas)) {
-      const name = (q.displayName || "").toLowerCase();
-      if ((key.includes("flash") || name.includes("flash")) && (name.includes("high") || key.includes("high") || key.includes("agent"))) {
-        return q;
+  else if (modelLower.includes("flash")) {
+    if (quotas["gemini-3-flash-agent"]) modelQuota = quotas["gemini-3-flash-agent"];
+    else {
+      for (const [key, q] of Object.entries(quotas)) {
+        const name = (q.displayName || "").toLowerCase();
+        if ((key.includes("flash") || name.includes("flash")) && (name.includes("high") || key.includes("high") || key.includes("agent"))) {
+          modelQuota = q;
+          break;
+        }
       }
-    }
-    // Fallback: any flash quota
-    for (const [key, q] of Object.entries(quotas)) {
-      if (key.includes("flash") || (q.displayName && q.displayName.toLowerCase().includes("flash"))) {
-        return q;
+      if (!modelQuota) {
+        for (const [key, q] of Object.entries(quotas)) {
+          if (key.includes("flash") || (q.displayName && q.displayName.toLowerCase().includes("flash"))) {
+            modelQuota = q;
+            break;
+          }
+        }
       }
     }
   }
 
   // 3. Pro group: anything with "pro" (gemini-pro-agent, gemini-3.1-pro-low, etc.)
-  if (modelLower.includes("pro")) {
-    if (quotas["gemini-pro-agent"]) return quotas["gemini-pro-agent"];
-    for (const [key, q] of Object.entries(quotas)) {
-      if (key.includes("pro") || (q.displayName && q.displayName.toLowerCase().includes("pro"))) {
-        return q;
+  else if (modelLower.includes("pro")) {
+    if (quotas["gemini-pro-agent"]) modelQuota = quotas["gemini-pro-agent"];
+    else {
+      for (const [key, q] of Object.entries(quotas)) {
+        if (key.includes("pro") || (q.displayName && q.displayName.toLowerCase().includes("pro"))) {
+          modelQuota = q;
+          break;
+        }
       }
     }
   }
 
   // 4. Claude Sonnet group
-  if (modelLower.includes("sonnet")) {
-    if (quotas["claude-sonnet-4-6"]) return quotas["claude-sonnet-4-6"];
-    for (const [key, q] of Object.entries(quotas)) {
-      if (key.includes("sonnet") || (q.displayName && q.displayName.toLowerCase().includes("sonnet"))) {
-        return q;
+  else if (modelLower.includes("sonnet")) {
+    if (quotas["claude-sonnet-4-6"]) modelQuota = quotas["claude-sonnet-4-6"];
+    else {
+      for (const [key, q] of Object.entries(quotas)) {
+        if (key.includes("sonnet") || (q.displayName && q.displayName.toLowerCase().includes("sonnet"))) {
+          modelQuota = q;
+          break;
+        }
       }
     }
   }
 
   // 5. Claude Opus group
-  if (modelLower.includes("opus")) {
-    if (quotas["claude-opus-4-6-thinking"]) return quotas["claude-opus-4-6-thinking"];
-    for (const [key, q] of Object.entries(quotas)) {
-      if (key.includes("opus") || (q.displayName && q.displayName.toLowerCase().includes("opus"))) {
-        return q;
+  else if (modelLower.includes("opus")) {
+    if (quotas["claude-opus-4-6-thinking"]) modelQuota = quotas["claude-opus-4-6-thinking"];
+    else {
+      for (const [key, q] of Object.entries(quotas)) {
+        if (key.includes("opus") || (q.displayName && q.displayName.toLowerCase().includes("opus"))) {
+          modelQuota = q;
+          break;
+        }
       }
     }
   }
 
-  // 6. Generic displayName check
-  for (const [key, q] of Object.entries(quotas)) {
-    if (q.displayName && q.displayName.toLowerCase() === modelLower) {
-      return q;
+  // 6. GPT group
+  else if (modelLower.includes("gpt") || modelLower.includes("oss")) {
+    if (quotas["gpt-oss-120b-medium"]) modelQuota = quotas["gpt-oss-120b-medium"];
+    else {
+      for (const [key, q] of Object.entries(quotas)) {
+        if (key.includes("gpt") || (q.displayName && (q.displayName.toLowerCase().includes("gpt") || q.displayName.toLowerCase().includes("oss")))) {
+          modelQuota = q;
+          break;
+        }
+      }
     }
   }
+
+  // 7. Generic displayName check
+  if (!modelQuota) {
+    for (const [key, q] of Object.entries(quotas)) {
+      if (q.displayName && q.displayName.toLowerCase() === modelLower) {
+        modelQuota = q;
+        break;
+      }
+    }
+  }
+
+  if (modelQuota) return modelQuota;
+
+  // Fallback to weekly quota if no model-specific quota was reported (e.g. Free Tier)
+  if (weeklyQuota) return weeklyQuota;
 
   return null;
 }
