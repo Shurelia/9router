@@ -131,6 +131,88 @@ async function _doRefresh(connectionId, accessToken, providerSpecificData, now) 
 }
 
 /**
+ * Resolve the matching quota entry from Antigravity quotas map for a requested model.
+ * Groups models by family:
+ * - Anything with "flash" matches "Flash (High)" quota (gemini-3-flash-agent, etc.)
+ *   completely skipping model version strings for robust checking.
+ * - Anything with "pro" matches "Pro" quota (gemini-pro-agent, etc.)
+ * - Claude Sonnet / Opus matches their respective quotas.
+ * - Fallback to exact modelKey or matching displayName.
+ *
+ * @param {object|null|undefined} quotas - The quotas map from Antigravity usage API
+ * @param {string|null|undefined} model - The requested model ID or alias
+ * @returns {object|null} The matching quota entry or null
+ */
+export function findAntigravityQuota(quotas, model) {
+  if (!quotas || typeof quotas !== "object" || !model) return null;
+
+  const rawModel = String(model).trim();
+  const cleanModel = rawModel.replace(/^(ag|antigravity)\//i, "");
+  const modelLower = cleanModel.toLowerCase();
+
+  // 1. Direct key match if present
+  if (quotas[cleanModel]) return quotas[cleanModel];
+  if (quotas[rawModel]) return quotas[rawModel];
+
+  // 2. Flash group: anything with "flash" (gemini-3.8-flash-high, gemini-3.7-flash-high, etc.)
+  // syncs with "Flash (High)" quota (upstream key gemini-3-flash-agent, or displayName with "flash" and "high")
+  if (modelLower.includes("flash")) {
+    if (quotas["gemini-3-flash-agent"]) return quotas["gemini-3-flash-agent"];
+    for (const [key, q] of Object.entries(quotas)) {
+      const name = (q.displayName || "").toLowerCase();
+      if ((key.includes("flash") || name.includes("flash")) && (name.includes("high") || key.includes("high") || key.includes("agent"))) {
+        return q;
+      }
+    }
+    // Fallback: any flash quota
+    for (const [key, q] of Object.entries(quotas)) {
+      if (key.includes("flash") || (q.displayName && q.displayName.toLowerCase().includes("flash"))) {
+        return q;
+      }
+    }
+  }
+
+  // 3. Pro group: anything with "pro" (gemini-pro-agent, gemini-3.1-pro-low, etc.)
+  if (modelLower.includes("pro")) {
+    if (quotas["gemini-pro-agent"]) return quotas["gemini-pro-agent"];
+    for (const [key, q] of Object.entries(quotas)) {
+      if (key.includes("pro") || (q.displayName && q.displayName.toLowerCase().includes("pro"))) {
+        return q;
+      }
+    }
+  }
+
+  // 4. Claude Sonnet group
+  if (modelLower.includes("sonnet")) {
+    if (quotas["claude-sonnet-4-6"]) return quotas["claude-sonnet-4-6"];
+    for (const [key, q] of Object.entries(quotas)) {
+      if (key.includes("sonnet") || (q.displayName && q.displayName.toLowerCase().includes("sonnet"))) {
+        return q;
+      }
+    }
+  }
+
+  // 5. Claude Opus group
+  if (modelLower.includes("opus")) {
+    if (quotas["claude-opus-4-6-thinking"]) return quotas["claude-opus-4-6-thinking"];
+    for (const [key, q] of Object.entries(quotas)) {
+      if (key.includes("opus") || (q.displayName && q.displayName.toLowerCase().includes("opus"))) {
+        return q;
+      }
+    }
+  }
+
+  // 6. Generic displayName check
+  for (const [key, q] of Object.entries(quotas)) {
+    if (q.displayName && q.displayName.toLowerCase() === modelLower) {
+      return q;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Handle Antigravity 409/429 — refresh RAM cache and return model resetAt when exhausted.
  * Called from chat handler error path.
  * @returns {number|null} resetAt timestamp ms (for resetsAtMs passthrough) or null
@@ -140,7 +222,8 @@ export async function handleAntigravityQuotaError(connectionId, status, model, a
 
   // Throttle applies to error paths too: one quota request per account/30s.
   // The first 409/429 populates cache; concurrent or repeated errors reuse it.
-  const quota = (await refreshAntigravityQuota(connectionId, accessToken, providerSpecificData))?.[model];
+  const quotas = await refreshAntigravityQuota(connectionId, accessToken, providerSpecificData);
+  const quota = findAntigravityQuota(quotas, model);
 
   // Strike breaker: count every 429 whose quota reading is either optimistic
   // (remaining > 0) or unavailable (quota API 403/error). 3 within the window
