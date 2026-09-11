@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import PropTypes from "prop-types";
 import Modal from "./Modal";
 import ProviderIcon from "./ProviderIcon";
@@ -8,6 +8,79 @@ import CapacityBadges from "./CapacityBadges";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias } from "@/shared/constants/providers";
+import { getModelButtonClass } from "@/shared/utils/modelSelectUtils";
+
+// ponytail: module-level Map cache resets on full page reload; upgrade to localStorage if multi-tab persistence is needed
+const globalModelTestCache = new Map();
+
+export function ModelTestButton({ modelValue, modelKind, isTesting, testResult, isSelected, isAdded, onTest }) {
+  const testStatus = isTesting ? "testing" : testResult?.status;
+
+  const title = isTesting
+    ? "Testing model..."
+    : testStatus === "ok"
+      ? `Passed (${testResult?.latencyMs ?? 0}ms) — click to re-test`
+      : testStatus === "error"
+        ? `Failed: ${testResult?.error || "Unreachable"} — click to re-test`
+        : "Test model";
+
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={(e) => {
+        e.stopPropagation();
+        onTest(modelValue, modelKind);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.stopPropagation();
+          e.preventDefault();
+          onTest(modelValue, modelKind);
+        }
+      }}
+      title={title}
+      className={`ml-0.5 inline-flex items-center justify-center p-0.5 rounded transition-all cursor-pointer ${
+        testStatus === "ok"
+          ? "text-green-500 hover:text-green-600 hover:bg-green-500/20"
+          : testStatus === "error"
+            ? "text-red-500 hover:text-red-600 hover:bg-red-500/20"
+            : isTesting
+              ? "text-primary"
+              : isSelected || isAdded
+                ? "text-white/60 hover:text-white hover:bg-white/20"
+                : "text-text-muted/50 hover:text-primary hover:bg-primary/10"
+      }`}
+    >
+      <span
+        className={`material-symbols-outlined leading-none ${isTesting ? "animate-spin" : ""}`}
+        style={{ fontSize: "11px" }}
+      >
+        {isTesting
+          ? "progress_activity"
+          : testStatus === "ok"
+            ? "check_circle"
+            : testStatus === "error"
+              ? "cancel"
+              : "science"}
+      </span>
+    </span>
+  );
+}
+
+ModelTestButton.propTypes = {
+  modelValue: PropTypes.string.isRequired,
+  modelKind: PropTypes.string,
+  isTesting: PropTypes.bool,
+  testResult: PropTypes.shape({
+    status: PropTypes.string,
+    latencyMs: PropTypes.number,
+    error: PropTypes.string,
+  }),
+  isSelected: PropTypes.bool,
+  isAdded: PropTypes.bool,
+  onTest: PropTypes.func.isRequired,
+};
 
 // Provider order: OAuth first, then Free Tier, then API Key (matches dashboard/providers)
 const PROVIDER_ORDER = [
@@ -97,6 +170,41 @@ export default function ModelSelectModal({
   const [providerNodes, setProviderNodes] = useState([]);
   const [customModels, setCustomModels] = useState([]);
   const [disabledModels, setDisabledModels] = useState({});
+  const [modelTestResults, setModelTestResults] = useState(() => {
+    return Object.fromEntries(globalModelTestCache.entries());
+  });
+  const [testingModels, setTestingModels] = useState({});
+
+  const handleTestModel = useCallback(async (modelValue, modelKind) => {
+    if (!modelValue || testingModels[modelValue]) return;
+    setTestingModels((prev) => ({ ...prev, [modelValue]: true }));
+    try {
+      const res = await fetch("/api/models/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelValue, kind: modelKind || kindFilter || "llm" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const ok = res.ok && data.ok;
+      const result = {
+        status: ok ? "ok" : "error",
+        latencyMs: data.latencyMs,
+        error: ok ? null : (data.error || `HTTP ${res.status}`),
+      };
+      globalModelTestCache.set(modelValue, result);
+      setModelTestResults((prev) => ({ ...prev, [modelValue]: result }));
+    } catch (err) {
+      const result = { status: "error", error: err.message || "Network error" };
+      globalModelTestCache.set(modelValue, result);
+      setModelTestResults((prev) => ({ ...prev, [modelValue]: result }));
+    } finally {
+      setTestingModels((prev) => {
+        const next = { ...prev };
+        delete next[modelValue];
+        return next;
+      });
+    }
+  }, [testingModels, kindFilter]);
   // Cursor and Cline expose the usable catalog per account, so the static catalog is
   // kept only as a fallback: it goes stale quickly and entitlements differ per account.
   // Single map driven by LIVE_CATALOG_PROVIDERS so the constant cannot drift
@@ -530,24 +638,32 @@ export default function ModelSelectModal({
             <div className="flex flex-wrap gap-1.5">
               {filteredCombos.map((combo) => {
                 const isSelected = selectedModel === combo.name;
+                const isAdded = addedModelValues.includes(combo.name);
+                const isTesting = !!testingModels[combo.name];
+                const testResult = modelTestResults[combo.name];
+                const testStatus = isTesting ? "testing" : testResult?.status;
                 return (
                   <button
                     key={combo.id}
                     onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
                     className={`
                       px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1
-                      ${isSelected
-                        ? "bg-primary text-white border-primary"
-                        : addedModelValues.includes(combo.name)
-                          ? "bg-primary border-primary text-white hover:bg-primary-hover"
-                          : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
-                      }
+                      ${getModelButtonClass({ isPlaceholder: false, isSelected, isAdded, testStatus })}
                     `}
                   >
-                    {addedModelValues.includes(combo.name) && (
+                    {isAdded && (
                       <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
                     )}
                     {combo.name}
+                    <ModelTestButton
+                      modelValue={combo.name}
+                      modelKind="llm"
+                      isTesting={isTesting}
+                      testResult={testResult}
+                      isSelected={isSelected}
+                      isAdded={isAdded}
+                      onTest={handleTestModel}
+                    />
                   </button>
                 );
               })}
@@ -579,6 +695,10 @@ export default function ModelSelectModal({
               {group.models.map((model) => {
                 const isSelected = selectedModel === model.value;
                 const isPlaceholder = model.isPlaceholder;
+                const isAdded = addedModelValues.includes(model.value);
+                const isTesting = !!testingModels[model.value];
+                const testResult = modelTestResults[model.value];
+                const testStatus = isTesting ? "testing" : testResult?.status;
                 return (
                   <button
                     key={model.value}
@@ -586,18 +706,11 @@ export default function ModelSelectModal({
                     title={isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : undefined}
                     className={`
                       px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
-                      ${isPlaceholder
-                        ? "border-dashed border-border text-text-muted hover:border-primary/50 hover:text-primary bg-surface italic"
-                        : isSelected
-                          ? "bg-primary text-white border-primary"
-                          : addedModelValues.includes(model.value)
-                            ? "bg-primary border-primary text-white hover:bg-primary-hover"
-                            : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
-                      }
+                      ${getModelButtonClass({ isPlaceholder, isSelected, isAdded, testStatus })}
                     `}
                   >
                     <span className="flex items-center gap-1">
-                      {addedModelValues.includes(model.value) && !isPlaceholder && (
+                      {isAdded && !isPlaceholder && (
                         <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
                       )}
                       {isPlaceholder ? (
@@ -616,6 +729,17 @@ export default function ModelSelectModal({
                           {model.name}
                           <CapacityBadges caps={getCaps(model.value)} />
                         </>
+                      )}
+                      {!isPlaceholder && (
+                        <ModelTestButton
+                          modelValue={model.value}
+                          modelKind={model.kind}
+                          isTesting={isTesting}
+                          testResult={testResult}
+                          isSelected={isSelected}
+                          isAdded={isAdded}
+                          onTest={handleTestModel}
+                        />
                       )}
                     </span>
                   </button>
