@@ -26,6 +26,27 @@ export function normalizeResponsesInput(input) {
 // Strict Responses upstreams reject overlong call_ids with InputValidationError (#393).
 export const MAX_RESPONSES_CALL_ID_LEN = 64;
 
+// Strict Responses upstreams validate function/tool names with ^[a-zA-Z0-9_-]{1,64}$
+export const MAX_RESPONSES_TOOL_NAME_LEN = 64;
+
+/**
+ * Sanitize function/tool name to match OpenAI pattern: ^[a-zA-Z0-9_-]{1,64}$
+ * Replaces invalid characters (e.g. colons, slashes, spaces) with '_' and clamps to 64 chars.
+ * @param {string} name - Raw tool name
+ * @returns {string} Sanitized tool name matching pattern
+ */
+export function sanitizeResponsesToolName(name) {
+  if (typeof name !== "string" || !name.trim()) return "tool";
+  const trimmed = name.trim();
+  if (/^[a-zA-Z0-9_-]{1,64}$/.test(trimmed)) {
+    return trimmed;
+  }
+  const sanitized = trimmed
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, MAX_RESPONSES_TOOL_NAME_LEN);
+  return sanitized || "tool";
+}
+
 // Fallback ids share one Date.now() when a batch of items is sanitized in a tight
 // loop — a per-process sequence keeps same-millisecond ids unique so
 // function_call ↔ function_call_output correlation never collides.

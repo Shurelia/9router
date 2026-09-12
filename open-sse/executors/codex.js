@@ -5,7 +5,10 @@ import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
-import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
+import {
+  normalizeResponsesInput,
+  sanitizeResponsesToolName,
+} from "../translator/formats/responsesApi.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
@@ -82,8 +85,12 @@ function normalizeCodexTools(body) {
     if (type === "namespace") {
       if (Array.isArray(tool.tools)) {
         for (const st of tool.tools) {
-          const n = typeof st?.name === "string" ? st.name.trim().slice(0, 128) : "";
-          if (n) validNames.add(n);
+          const rawN = typeof st?.name === "string" ? st.name.trim() : "";
+          const n = sanitizeResponsesToolName(rawN);
+          if (n) {
+            st.name = n;
+            validNames.add(n);
+          }
           if (st?.parameters && typeof st.parameters === "object") {
             st.parameters = stripCodexUnsupportedPatterns(st.parameters, patternStats);
           }
@@ -98,7 +105,7 @@ function normalizeCodexTools(body) {
     }
     const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : null;
     const rawName = typeof tool.name === "string" ? tool.name : (typeof fn?.name === "string" ? fn.name : "");
-    const name = rawName.trim();
+    const name = sanitizeResponsesToolName(rawName);
     if (!name) return false;
     const description = typeof tool.description === "string" ? tool.description : (typeof fn?.description === "string" ? fn.description : "");
     const parameters = (tool.parameters && typeof tool.parameters === "object" && !Array.isArray(tool.parameters))
@@ -106,7 +113,7 @@ function normalizeCodexTools(body) {
       : (fn?.parameters && typeof fn.parameters === "object" && !Array.isArray(fn.parameters) ? fn.parameters : { type: "object", properties: {} });
     for (const k of Object.keys(tool)) delete tool[k];
     tool.type = "function";
-    tool.name = name.slice(0, 128);
+    tool.name = name;
     if (description) tool.description = description;
     tool.parameters = stripCodexUnsupportedPatterns(parameters, patternStats);
     validNames.add(name);
@@ -118,8 +125,14 @@ function normalizeCodexTools(body) {
   // Drop tool_choice if it references an unknown function name
   if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
     if (body.tool_choice.type === "function") {
-      const n = typeof body.tool_choice.name === "string" ? body.tool_choice.name.trim() : "";
+      const rawN = typeof body.tool_choice.name === "string"
+        ? body.tool_choice.name.trim()
+        : (typeof body.tool_choice.function?.name === "string" ? body.tool_choice.function.name.trim() : "");
+      const n = sanitizeResponsesToolName(rawN);
       if (!n || !validNames.has(n)) delete body.tool_choice;
+      else {
+        body.tool_choice = { type: "function", name: n };
+      }
     }
   }
 }
@@ -412,6 +425,16 @@ export class CodexExecutor extends BaseExecutor {
     // Ensure input is present and non-empty (Codex API rejects empty input)
     if (!body.input || (Array.isArray(body.input) && body.input.length === 0)) {
       body.input = [{ type: "message", role: "user", content: [{ type: "input_text", text: "..." }] }];
+    }
+
+    // Sanitize any function/tool names in input (Codex strictly enforces ^[a-zA-Z0-9_-]{1,64}$)
+    if (Array.isArray(body.input)) {
+      for (const item of body.input) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+        if (typeof item.name === "string") {
+          item.name = sanitizeResponsesToolName(item.name);
+        }
+      }
     }
 
     // Keep system prompts in body.input as role=developer so they stay in the cacheable prefix
