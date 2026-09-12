@@ -11,10 +11,10 @@ import {
   clampResponsesCallId,
   coerceResponsesArguments,
   coerceResponsesOutput,
+  sanitizeResponsesToolName,
+  MAX_RESPONSES_TOOL_NAME_LEN,
 } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
-
-const MAX_TOOL_NAME_LEN = 128;
 
 /**
  * Convert OpenAI Responses API request to OpenAI Chat Completions format
@@ -319,6 +319,8 @@ function buildReasoningInputItem(msg) {
  * Convert OpenAI Chat Completions to OpenAI Responses API format
  */
 export function openaiToOpenAIResponsesRequest(model, body, stream, credentials) {
+  const toolNameMap = new Map();
+
   // Body already in Responses API format (e.g. Cursor CLI calling /chat/completions with input[])
   if (body.input) {
     const out = { ...body, model, stream: true };
@@ -328,6 +330,40 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     }
     delete out.max_tokens;
     delete out.max_completion_tokens;
+
+    if (Array.isArray(out.input)) {
+      out.input = out.input.map((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+        if (typeof item.name === "string") {
+          const sanitized = sanitizeResponsesToolName(item.name);
+          if (sanitized !== item.name) {
+            toolNameMap.set(sanitized, item.name);
+            return { ...item, name: sanitized };
+          }
+        }
+        return item;
+      });
+    }
+
+    if (Array.isArray(out.tools)) {
+      out.tools = out.tools.map((tool) => {
+        if (!tool || typeof tool !== "object" || Array.isArray(tool)) return tool;
+        const fn = tool.function;
+        const rawName = typeof tool.name === "string" ? tool.name : (typeof fn?.name === "string" ? fn.name : "");
+        if (!rawName) return tool;
+        const sanitized = sanitizeResponsesToolName(rawName);
+        if (sanitized !== rawName) {
+          toolNameMap.set(sanitized, rawName);
+          if (typeof tool.name === "string") return { ...tool, name: sanitized };
+          if (fn) return { ...tool, function: { ...fn, name: sanitized } };
+        }
+        return tool;
+      });
+    }
+
+    if (toolNameMap.size > 0) {
+      out._toolNameMap = toolNameMap;
+    }
     return out;
   }
 
@@ -399,12 +435,16 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     if (msg.role === ROLE.ASSISTANT && msg.tool_calls) {
       for (const tc of msg.tool_calls) {
         // Skip nameless calls — strict Responses upstreams reject them (#444)
-        const name = typeof tc.function?.name === "string" ? tc.function.name.trim() : "";
-        if (!name) continue;
+        const rawName = typeof tc.function?.name === "string" ? tc.function.name.trim() : "";
+        if (!rawName) continue;
+        const name = sanitizeResponsesToolName(rawName);
+        if (name !== rawName) {
+          toolNameMap.set(name, rawName);
+        }
         result.input.push({
           type: RESPONSES_ITEM.FUNCTION_CALL,
           call_id: clampResponsesCallId(tc.id),
-          name: name.slice(0, MAX_TOOL_NAME_LEN),
+          name,
           arguments: coerceResponsesArguments(tc.function?.arguments)
         });
       }
@@ -430,11 +470,15 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     result.tools = body.tools.map(tool => {
       if (tool.type === OPENAI_BLOCK.FUNCTION) {
         // Strict upstreams reject nameless/overlong tool declarations
-        const name = typeof tool.function?.name === "string" ? tool.function.name.trim() : "";
-        if (!name) return null;
+        const rawName = typeof tool.function?.name === "string" ? tool.function.name.trim() : "";
+        if (!rawName) return null;
+        const name = sanitizeResponsesToolName(rawName);
+        if (name !== rawName) {
+          toolNameMap.set(name, rawName);
+        }
         return {
           type: OPENAI_BLOCK.FUNCTION,
-          name: name.slice(0, MAX_TOOL_NAME_LEN),
+          name,
           description: String(tool.function.description || ""),
           parameters: normalizeToolParameters(tool.function.parameters),
           strict: tool.function.strict
@@ -442,6 +486,25 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
       }
       return tool;
     }).filter(Boolean);
+  }
+
+  if (body.tool_choice) {
+    if (typeof body.tool_choice === "string") {
+      result.tool_choice = body.tool_choice;
+    } else if (typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
+      if (body.tool_choice.type === "function") {
+        const rawName = typeof body.tool_choice.function?.name === "string"
+          ? body.tool_choice.function.name.trim()
+          : (typeof body.tool_choice.name === "string" ? body.tool_choice.name.trim() : "");
+        if (rawName) {
+          const name = sanitizeResponsesToolName(rawName);
+          if (name !== rawName) toolNameMap.set(name, rawName);
+          result.tool_choice = { type: "function", name };
+        }
+      } else {
+        result.tool_choice = body.tool_choice;
+      }
+    }
   }
 
   // Pass through other relevant fields
@@ -458,6 +521,10 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   if (body.reasoning_effort !== undefined) result.reasoning = { effort: body.reasoning_effort, summary: "auto" };
   if (body.service_tier !== undefined) result.service_tier = body.service_tier;
   if (body.prompt_cache_key !== undefined) result.prompt_cache_key = body.prompt_cache_key;
+
+  if (toolNameMap.size > 0) {
+    result._toolNameMap = toolNameMap;
+  }
 
   return result;
 }

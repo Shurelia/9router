@@ -489,6 +489,9 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
       if (key) state.respToolChatIndex.set(key, idx);
     }
 
+    const rawName = item.name || "";
+    const name = state.toolNameMap?.get(rawName) || rawName;
+
     return buildChunk(
       { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
       {
@@ -496,7 +499,7 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
           index: idx,
           id: state.currentToolCallId,
           type: OPENAI_BLOCK.FUNCTION,
-          function: { name: item.name || "", arguments: "" }
+          function: { name, arguments: "" }
         }]
       }
     );
