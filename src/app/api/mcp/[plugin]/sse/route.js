@@ -19,10 +19,23 @@ export async function GET(request, { params }) {
 
   const stream = new ReadableStream({
     start(controller) {
-      const send = (chunk) => controller.enqueue(encoder.encode(chunk));
-      sid = registerSession(plugin, send);
-      // MCP SSE handshake: tell client where to POST messages.
-      send(`event: endpoint\ndata: /api/mcp/${plugin}/message?sessionId=${sid}\n\n`);
+      const send = (chunk) => {
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch { /* stream closed */ }
+      };
+      try {
+        sid = registerSession(plugin, send);
+        if (!sid) {
+          controller.close();
+          return;
+        }
+        // MCP SSE handshake: tell client where to POST messages.
+        send(`event: endpoint\ndata: /api/mcp/${plugin}/message?sessionId=${sid}\n\n`);
+      } catch (err) {
+        console.error(`[mcp:${plugin}] failed to start session:`, err.message);
+        controller.close();
+      }
     },
     cancel() {
       if (sid) unregisterSession(plugin, sid);

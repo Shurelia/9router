@@ -3,7 +3,7 @@
 
 const { spawn } = require("child_process");
 const crypto = require("crypto");
-const { LOCAL_STDIO_PLUGINS } = require("@/shared/constants/coworkPlugins");
+const { LOCAL_STDIO_PLUGINS } = require("../../shared/constants/coworkPlugins");
 
 const G_KEY = "__9routerMcpBridges";
 const MAX_TEXT_CHARS = 50000;
@@ -114,12 +114,37 @@ function getOrSpawn(name) {
   const plugin = findPlugin(name);
   if (!plugin) throw new Error(`Unknown local plugin: ${name}`);
 
-  const proc = spawn(plugin.command, plugin.args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+  const isWin = process.platform === "win32";
+  const cmd = isWin && plugin.command === "npx" ? "npx.cmd" : plugin.command;
+
+  let proc;
+  try {
+    proc = spawn(cmd, plugin.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: process.env,
+      shell: isWin,
+      windowsHide: true,
+    });
+  } catch (err) {
+    console.error(`[mcp:${name}] spawn sync error:`, err.message);
+    return null;
+  }
+
   entry = { proc, sessions: new Map(), buffer: "" };
   store.set(name, entry);
 
+  proc.on("error", (err) => {
+    console.error(`[mcp:${name}] process error:`, err.message);
+    store.delete(name);
+    for (const send of entry.sessions.values()) {
+      try {
+        send(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: `Failed to spawn ${name}: ${err.message}` } })}\n\n`);
+      } catch { /* ignore broken pipe */ }
+    }
+  });
+
   // Parse newline-delimited JSON-RPC from child stdout, broadcast to all sessions.
-  proc.stdout.on("data", (chunk) => {
+  proc.stdout?.on("data", (chunk) => {
     entry.buffer += chunk.toString("utf8");
     let idx;
     while ((idx = entry.buffer.indexOf("\n")) >= 0) {
@@ -133,7 +158,7 @@ function getOrSpawn(name) {
     }
   });
 
-  proc.stderr.on("data", (d) => console.log(`[mcp:${name}]`, d.toString().trim()));
+  proc.stderr?.on("data", (d) => console.log(`[mcp:${name}]`, d.toString().trim()));
   proc.on("exit", (code) => {
     console.log(`[mcp:${name}] exited`, code);
     store.delete(name);
@@ -144,6 +169,7 @@ function getOrSpawn(name) {
 
 function registerSession(name, sendFn) {
   const entry = getOrSpawn(name);
+  if (!entry) return null;
   const sid = crypto.randomUUID();
   entry.sessions.set(sid, sendFn);
   return sid;
