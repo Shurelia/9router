@@ -9,10 +9,15 @@ import { DEFAULT_PLUGINS, LOCAL_STDIO_PLUGINS, buildManagedMcpServers } from "@/
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 
-const APP_PORT = UPDATER_CONFIG.appPort;
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
-const LOCAL_MCP_PREFIX = `http://localhost:${APP_PORT}/api/mcp/`;
+
+const MANAGED_MCP_NAMES = new Set([
+  ...DEFAULT_PLUGINS.map((p) => p.name),
+  ...LOCAL_STDIO_PLUGINS.map((p) => p.name),
+  "9router-web",
+  "web-search",
+]);
 
 let cachedCliToken = null;
 const getCliToken = async () => {
@@ -24,7 +29,7 @@ const getCliToken = async () => {
 const injectAuthHeaders = async (entries) => {
   const token = await getCliToken();
   for (const e of entries) {
-    if (typeof e?.url === "string" && e.url.startsWith(LOCAL_MCP_PREFIX)) {
+    if (typeof e?.url === "string" && e.url.includes("/api/mcp/")) {
       e.headers = { ...(e.headers || {}), [CLI_TOKEN_HEADER]: token };
     }
   }
@@ -153,7 +158,7 @@ const cleanup1pLegacy = async () => {
 };
 
 // Build SSE bridge entries pointing at this app's inline /api/mcp/{name} endpoint.
-const buildLocalBridgeEntries = (localPluginNames) => {
+const buildLocalBridgeEntries = (localPluginNames, rootUrl) => {
   const names = Array.isArray(localPluginNames) ? localPluginNames : [];
   const out = [];
   for (const n of names) {
@@ -161,7 +166,7 @@ const buildLocalBridgeEntries = (localPluginNames) => {
     if (!def) continue;
     const entry = {
       name: def.name,
-      url: `http://localhost:${APP_PORT}/api/mcp/${def.name}/sse`,
+      url: `${rootUrl}/api/mcp/${def.name}/sse`,
       transport: "sse",
     };
     if (Array.isArray(def.toolNames) && def.toolNames.length > 0) {
@@ -266,10 +271,26 @@ export async function GET() {
       .filter((m) => stdioNames.has(m.name) && typeof m.url === "string" && m.url.includes("/api/mcp/"))
       .map((m) => m.name);
 
-    // Custom plugins = bridge entries not in preset LOCAL_STDIO_PLUGINS (custom:true or unknown name).
+    // Custom plugins = user-defined plugins (exclude preset/managed plugins and internal 9router bridges)
     const activeCustomPlugins = managedMcp
-      .filter((m) => m.custom || (!stdioNames.has(m.name) && typeof m.url === "string" && m.url.includes("/api/mcp/")))
+      .filter((m) => !MANAGED_MCP_NAMES.has(m.name) && (m.custom || (typeof m.url === "string" && !m.url.includes("/api/mcp/"))))
       .map((m) => ({ name: m.name, url: m.url, transport: m.transport, custom: true }));
+
+    // Detect web search provider
+    let webSearchProvider = "";
+    if (managedMcp.some((m) => m.name === "exa")) {
+      webSearchProvider = "exa";
+    } else {
+      const webMcp = managedMcp.find((m) => m.name === "9router-web" || m.name === "web-search");
+      if (webMcp?.url) {
+        try {
+          const u = new URL(webMcp.url);
+          webSearchProvider = u.searchParams.get("provider") || "ag";
+        } catch {
+          webSearchProvider = "ag";
+        }
+      }
+    }
 
     return NextResponse.json({
       installed: true,
@@ -281,7 +302,7 @@ export async function GET() {
         baseUrl,
         models,
         provider: config?.inferenceProvider || null,
-        plugins: managedMcp.filter((m) => !m.custom && !(stdioNames.has(m.name) && typeof m.url === "string" && m.url.includes("/api/mcp/"))).map((m) => {
+        plugins: managedMcp.filter((m) => !m.custom && !MANAGED_MCP_NAMES.has(m.name) && !(stdioNames.has(m.name) && typeof m.url === "string" && m.url.includes("/api/mcp/"))).map((m) => {
           // Strip "{name}-" prefix and dedupe so re-applies don't multiply entries.
           const keys = m.toolPolicy ? Object.keys(m.toolPolicy) : [];
           const prefix = `${m.name}-`;
@@ -298,6 +319,7 @@ export async function GET() {
         }),
         localPlugins: activeLocalNames,
         customPlugins: activeCustomPlugins,
+        webSearchProvider,
       },
       defaultPlugins: DEFAULT_PLUGINS,
       localStdioPlugins: LOCAL_STDIO_PLUGINS,
@@ -310,7 +332,7 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const { baseUrl, apiKey, models, plugins, localPlugins, customPlugins } = await request.json();
+    const { baseUrl, apiKey, models, plugins, localPlugins, customPlugins, webSearchProvider } = await request.json();
 
     if (!baseUrl || !apiKey) {
       return NextResponse.json({ error: "baseUrl and apiKey are required" }, { status: 400 });
@@ -320,15 +342,48 @@ export async function POST(request) {
       return NextResponse.json({ error: "At least one model is required" }, { status: 400 });
     }
 
-    // Respect empty array (user toggled all off); fallback to defaults only when undefined.
-    const pluginsArray = Array.isArray(plugins) ? plugins : DEFAULT_PLUGINS;
-    const localPluginNames = Array.isArray(localPlugins) ? localPlugins : [];
-    // Only URL-based custom plugins allowed (no stdio command spawning).
-    const customPluginsArray = (Array.isArray(customPlugins) ? customPlugins : []).filter((p) => p?.url);
+    const rootUrl = (baseUrl || "").replace(/\/v1\/?$/, "") || `http://localhost:${process.env.PORT || 20127}`;
 
-    const bridgeEntries = await injectAuthHeaders(buildLocalBridgeEntries(localPluginNames));
+    // Respect empty array (user toggled all off); fallback to defaults only when undefined.
+    let pluginsArray = (Array.isArray(plugins) ? plugins : DEFAULT_PLUGINS)
+      .filter((p) => p?.name !== "9router-web" && p?.name !== "web-search" && p?.name !== "exa");
+
+    const effectiveWebSearch = webSearchProvider !== undefined
+      ? webSearchProvider
+      : (plugins?.find((p) => p.name === "exa") ? "exa" : (plugins?.find((p) => p.name === "9router-web") ? "ag" : ""));
+
+    if (effectiveWebSearch === "exa") {
+      const exaDef = DEFAULT_PLUGINS.find((d) => d.name === "exa");
+      if (exaDef) pluginsArray.push(exaDef);
+    } else if (effectiveWebSearch) {
+      pluginsArray.push({
+        name: "9router-web",
+        title: `9Router Web Search (${effectiveWebSearch})`,
+        url: `${rootUrl}/api/mcp/web-search/sse?provider=${encodeURIComponent(effectiveWebSearch)}`,
+        transport: "sse",
+        oauth: false,
+        toolNames: ["web_search", "web_fetch"],
+      });
+    }
+
+    const localPluginNames = Array.isArray(localPlugins) ? localPlugins : [];
+    // Only URL-based custom plugins allowed (no stdio command spawning, no managed names).
+    const customPluginsArray = (Array.isArray(customPlugins) ? customPlugins : [])
+      .filter((p) => p?.url && !MANAGED_MCP_NAMES.has(p.name));
+
+    const bridgeEntries = await injectAuthHeaders(buildLocalBridgeEntries(localPluginNames, rootUrl));
     const customEntries = await injectAuthHeaders(buildCustomEntries(customPluginsArray));
-    const managedMcpServers = [...buildManagedMcpServers(pluginsArray), ...bridgeEntries, ...customEntries];
+    const rawServers = [...buildManagedMcpServers(pluginsArray), ...bridgeEntries, ...customEntries];
+
+    // Deduplicate by name so no plugin can ever be duplicated
+    const seen = new Set();
+    const managedMcpServers = [];
+    for (const s of rawServers) {
+      if (s?.name && !seen.has(s.name)) {
+        seen.add(s.name);
+        managedMcpServers.push(s);
+      }
+    }
 
     const bootstrapped = await bootstrapDeploymentMode();
     const meta = await ensureMeta();

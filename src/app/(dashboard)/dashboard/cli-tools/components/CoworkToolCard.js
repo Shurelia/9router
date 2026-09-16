@@ -150,6 +150,7 @@ export default function CoworkToolCard({
   const [selectedApiKey, setSelectedApiKey] = useState("");
   const [selectedModels, setSelectedModels] = useState([]);
   const [oneMContext, setOneMContext] = useState(false);
+  const [webSearchProvider, setWebSearchProvider] = useState("");
   const [showManualConfigModal, setShowManualConfigModal] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [plugins, setPlugins] = useState([]);
@@ -192,33 +193,6 @@ export default function CoworkToolCard({
       next[index] = newModel.trim();
       return next;
     });
-  };
-
-  const handleWebSearchChange = (val) => {
-    let nextPlugins = plugins.filter((p) => p.name !== "exa" && p.name !== "9router-web");
-    if (val === "exa") {
-      const exaDef = (status?.defaultPlugins || []).find((d) => d.name === "exa") || {
-        name: "exa",
-        title: "Exa",
-        url: "https://mcp.exa.ai/mcp",
-        transport: "http",
-        oauth: false,
-        toolNames: ["web_search_exa", "web_fetch_exa"],
-      };
-      nextPlugins.push(exaDef);
-    } else if (val) {
-      const effectiveBaseUrl = getEffectiveBaseUrl();
-      const rootUrl = stripV1(effectiveBaseUrl) || "http://localhost:20127";
-      nextPlugins.push({
-        name: "9router-web",
-        title: `9Router Web Search (${val})`,
-        url: `${rootUrl}/api/mcp/web-search/sse?provider=${encodeURIComponent(val)}`,
-        transport: "sse",
-        oauth: false,
-        toolNames: ["web_search", "web_fetch"],
-      });
-    }
-    setPlugins(nextPlugins);
   };
 
   useEffect(() => {
@@ -264,9 +238,12 @@ export default function CoworkToolCard({
     if (status?.cowork?.baseUrl && !customBaseUrl) {
       setCustomBaseUrl(stripV1(status.cowork.baseUrl));
     }
+    if (status?.cowork?.webSearchProvider !== undefined) {
+      setWebSearchProvider(status.cowork.webSearchProvider || "");
+    }
     // Initialize plugins: from current config, fallback to defaultPlugins
     if (Array.isArray(status?.cowork?.plugins) && status.cowork.plugins.length > 0) {
-      setPlugins(status.cowork.plugins);
+      setPlugins(status.cowork.plugins.filter((p) => p.name !== "9router-web" && p.name !== "web-search"));
     } else if (plugins.length === 0 && Array.isArray(status?.defaultPlugins)) {
       setPlugins(status.defaultPlugins);
     }
@@ -274,7 +251,11 @@ export default function CoworkToolCard({
       setLocalPlugins(status.cowork.localPlugins);
     }
     if (Array.isArray(status?.cowork?.customPlugins) && status.cowork.customPlugins.length > 0) {
-      setCustomPlugins(status.cowork.customPlugins);
+      setCustomPlugins(
+        status.cowork.customPlugins.filter(
+          (p) => p.name !== "9router-web" && p.name !== "web-search" && p.name !== "exa"
+        )
+      );
     }
   }, [status]);
 
@@ -336,9 +317,10 @@ export default function CoworkToolCard({
           baseUrl: effectiveUrl,
           apiKey: keyToUse,
           models: selectedModels,
-          plugins,
+          plugins: plugins.filter((p) => p.name !== "9router-web" && p.name !== "web-search" && p.name !== "exa"),
           localPlugins,
-          customPlugins,
+          customPlugins: customPlugins.filter((p) => p.name !== "9router-web" && p.name !== "web-search" && p.name !== "exa"),
+          webSearchProvider,
         }),
       });
       const data = await res.json();
@@ -404,6 +386,7 @@ export default function CoworkToolCard({
         setMessage({ type: "success", text: "Settings reset successfully" });
         setSelectedModels([]);
         setOneMContext(false);
+        setWebSearchProvider("");
         setPlugins(status?.defaultPlugins || []);
         setLocalPlugins([]);
         setCustomPlugins([]);
@@ -624,46 +607,31 @@ export default function CoworkToolCard({
                   <span className="w-32 shrink-0 text-sm font-semibold text-text-main text-right pt-1">Tools</span>
                   <span className="material-symbols-outlined text-text-muted text-[14px] mt-1.5">arrow_forward</span>
                   <div className="flex-1 flex flex-col gap-1.5">
-                    {(() => {
-                      const currentWebSearchPlugin = plugins.find((p) => p.name === "exa" || p.name === "9router-web");
-                      let currentWebSearchValue = "";
-                      if (currentWebSearchPlugin?.name === "exa") {
-                        currentWebSearchValue = "exa";
-                      } else if (currentWebSearchPlugin?.name === "9router-web") {
-                        try {
-                          const u = new URL(currentWebSearchPlugin.url);
-                          currentWebSearchValue = u.searchParams.get("provider") || "ag";
-                        } catch {
-                          currentWebSearchValue = "ag";
-                        }
-                      }
-                      return (
-                        <div className="flex flex-col gap-1.5 p-2 bg-surface rounded border border-border">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-xs font-medium">Web Search & Fetch</div>
-                              <p className="text-[10px] text-text-muted leading-snug">Replaces built-in WebSearch/WebFetch with 9Router or Exa MCP.</p>
-                            </div>
-                            <select
-                              value={currentWebSearchValue}
-                              onChange={(e) => handleWebSearchChange(e.target.value)}
-                              className="px-2 py-1 bg-background rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
-                            >
-                              <option value="">Disabled</option>
-                              <option value="exa">Exa MCP (external)</option>
-                              <optgroup label="9Router Web Search & Fetch">
-                                {searchProviders.map((p) => (
-                                  <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
-                                ))}
-                                {webCombos.map((c) => (
-                                  <option key={c.id} value={c.name}>Combo: {c.name}</option>
-                                ))}
-                              </optgroup>
-                            </select>
-                          </div>
+                    {/* Web Search & Fetch */}
+                    <div className="flex flex-col gap-1.5 p-2 bg-surface rounded border border-border">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium">Web Search & Fetch</div>
+                          <p className="text-[10px] text-text-muted leading-snug">Replaces built-in WebSearch/WebFetch with 9Router or Exa MCP.</p>
                         </div>
-                      );
-                    })()}
+                        <select
+                          value={webSearchProvider}
+                          onChange={(e) => setWebSearchProvider(e.target.value)}
+                          className="px-2 py-1 bg-background rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                        >
+                          <option value="">Disabled</option>
+                          <option value="exa">Exa MCP (external)</option>
+                          <optgroup label="9Router Web Search & Fetch">
+                            {searchProviders.map((p) => (
+                              <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
+                            ))}
+                            {webCombos.map((c) => (
+                              <option key={c.id} value={c.name}>Combo: {c.name}</option>
+                            ))}
+                          </optgroup>
+                        </select>
+                      </div>
+                    </div>
                     {(() => {
                       const browserDef = (status?.localStdioPlugins || []).find((p) => p.name === "browsermcp");
                       if (!browserDef) return null;
