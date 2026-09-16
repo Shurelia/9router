@@ -51,4 +51,15 @@ describe("model context marker", () => {
   it("tolerates a non-string model", () => {
     expect(stripModelContextMarker(undefined)).toEqual({ model: undefined, contextMarker: null });
   });
+
+  it("supports applying and removing [1m] marker without stacking", () => {
+    const withContextMarker = (value, enabled) => {
+      const { model } = stripModelContextMarker(value);
+      return enabled ? `${model}[1m]` : model;
+    };
+    expect(withContextMarker("claude-sonnet-5", true)).toBe("claude-sonnet-5[1m]");
+    expect(withContextMarker("claude-sonnet-5[1m]", true)).toBe("claude-sonnet-5[1m]");
+    expect(withContextMarker("claude-sonnet-5[1m]", false)).toBe("claude-sonnet-5");
+    expect(withContextMarker("claude-sonnet-5", false)).toBe("claude-sonnet-5");
+  });
 });

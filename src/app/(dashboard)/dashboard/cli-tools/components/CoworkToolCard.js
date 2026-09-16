@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Card, Button, ManualConfigModal, ComboFormModal, McpMarketplaceModal, ModelSelectModal } from "@/shared/components";
+import { Card, Button, ManualConfigModal, ComboFormModal, McpMarketplaceModal, ModelSelectModal, Tooltip } from "@/shared/components";
 import Image from "next/image";
 import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
+import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 
 const ENDPOINT = "/api/cli-tools/cowork-settings";
 
@@ -39,6 +40,7 @@ export default function CoworkToolCard({
   const [message, setMessage] = useState(null);
   const [selectedApiKey, setSelectedApiKey] = useState("");
   const [selectedModels, setSelectedModels] = useState([]);
+  const [oneMContext, setOneMContext] = useState(false);
   const [showManualConfigModal, setShowManualConfigModal] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [plugins, setPlugins] = useState([]);
@@ -78,6 +80,7 @@ export default function CoworkToolCard({
   useEffect(() => {
     if (status?.cowork?.models?.length) {
       setSelectedModels(status.cowork.models);
+      setOneMContext(status.cowork.models.some((m) => /\[1m\]$/i.test(m)));
     }
     if (status?.cowork?.baseUrl && !customBaseUrl) {
       setCustomBaseUrl(stripV1(status.cowork.baseUrl));
@@ -95,6 +98,16 @@ export default function CoworkToolCard({
       setCustomPlugins(status.cowork.customPlugins);
     }
   }, [status]);
+
+  const withContextMarker = (value, enabled) => {
+    const { model } = stripModelContextMarker(value);
+    return enabled ? `${model}[1m]` : model;
+  };
+
+  const handleOneMContextToggle = (enabled) => {
+    setOneMContext(enabled);
+    setSelectedModels((prev) => prev.map((m) => withContextMarker(m, enabled)));
+  };
 
   const checkStatus = async () => {
     setChecking(true);
@@ -177,8 +190,9 @@ export default function CoworkToolCard({
         setMessage({ type: "error", text: err.error || "Failed to create combo" });
         return;
       }
-      if (!selectedModels.includes(name)) {
-        setSelectedModels([...selectedModels, name]);
+      const finalName = withContextMarker(name, oneMContext);
+      if (!selectedModels.includes(finalName)) {
+        setSelectedModels([...selectedModels, finalName]);
       }
       setComboModalOpen(false);
       setMessage({ type: "success", text: `Combo "${name}" created and added.` });
@@ -189,13 +203,16 @@ export default function CoworkToolCard({
 
   const handleAddModel = (model) => {
     const value = model?.value || model?.name || model;
-    if (!value || selectedModels.includes(value)) return;
-    setSelectedModels((prev) => [...prev, value]);
+    if (!value) return;
+    const bareValue = stripModelContextMarker(value).model;
+    if (selectedModels.some((m) => stripModelContextMarker(m).model === bareValue)) return;
+    setSelectedModels((prev) => [...prev, withContextMarker(bareValue, oneMContext)]);
   };
 
   const handleRemoveModel = (model) => {
     const value = model?.value || model?.name || model;
-    setSelectedModels((prev) => prev.filter((item) => item !== value));
+    const bareValue = stripModelContextMarker(value).model;
+    setSelectedModels((prev) => prev.filter((item) => stripModelContextMarker(item).model !== bareValue));
   };
 
   const handleReset = async () => {
@@ -207,6 +224,7 @@ export default function CoworkToolCard({
       if (res.ok) {
         setMessage({ type: "success", text: "Settings reset successfully" });
         setSelectedModels([]);
+        setOneMContext(false);
         setPlugins(status?.defaultPlugins || []);
         setLocalPlugins([]);
         setCustomPlugins([]);
@@ -349,8 +367,22 @@ export default function CoworkToolCard({
                         ))
                       )}
                     </div>
+                    <button onClick={() => setModelSelectOpen(true)} disabled={!hasActiveProviders} className={`shrink-0 px-2 py-1.5 rounded border text-xs whitespace-nowrap transition-colors ${hasActiveProviders ? "bg-primary/10 border-primary/40 text-primary hover:bg-primary/20 cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}>+ Model</button>
                     <button onClick={() => setComboModalOpen(true)} disabled={!hasActiveProviders} className={`shrink-0 px-2 py-1.5 rounded border text-xs whitespace-nowrap transition-colors ${hasActiveProviders ? "bg-primary/10 border-primary/40 text-primary hover:bg-primary/20 cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}>+ Combo</button>
                   </div>
+                </div>
+
+                {/* 1M context */}
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">1M context</span>
+                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input type="checkbox" checked={oneMContext} onChange={(e) => handleOneMContextToggle(e.target.checked)} className="w-3.5 h-3.5 accent-primary cursor-pointer" />
+                    <span className="text-xs text-text-muted">Append [1m] to the model name</span>
+                    <Tooltip text="Claude Desktop otherwise assumes a 200K window. Applied to every selected model — only enable it for models that really accept 1M.">
+                      <span className="material-symbols-outlined text-text-muted text-[14px] cursor-help">info</span>
+                    </Tooltip>
+                  </label>
                 </div>
 
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr] sm:items-start sm:gap-2">
@@ -541,7 +573,7 @@ export default function CoworkToolCard({
           activeProviders={activeProviders}
           modelAliases={modelAliases}
           title="Select Cowork Model"
-          addedModelValues={selectedModels}
+          addedModelValues={selectedModels.map((m) => stripModelContextMarker(m).model)}
           closeOnSelect={false}
         />
       )}
