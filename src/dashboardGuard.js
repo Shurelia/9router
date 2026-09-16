@@ -202,6 +202,12 @@ export const __test__ = {
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
 
+  // 9Router Web Search & Fetch MCP: accessible locally or with API key / CLI token (same as /v1/search)
+  if (pathname.startsWith("/api/mcp/web-search") || pathname.startsWith("/api/mcp/9router-web")) {
+    if (await canAccessPublicLlmApi(request)) return NextResponse.next();
+    return NextResponse.json({ error: "API key required for remote access" }, { status: 401 });
+  }
+
   // Local-only gate for spawn-capable / host-secret routes.
   if (LOCAL_ONLY_PATHS.some((p) => pathname.startsWith(p))) {
     if (!(await canAccessLocalOnlyRoute(request))) {

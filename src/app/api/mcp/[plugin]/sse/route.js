@@ -4,6 +4,17 @@ import { isWebSearchPlugin, handleWebSearchSse } from "@/lib/mcp/webSearchMcp";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    },
+  });
+}
+
 export async function GET(request, { params }) {
   const { plugin } = await params;
   if (isWebSearchPlugin(plugin)) {

@@ -35,9 +35,16 @@ function getBaseUrl() {
   return `http://127.0.0.1:${port}`;
 }
 
-async function executeWebSearch({ query, maxResults = 5, provider = DEFAULT_SEARCH_PROVIDER }) {
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "*",
+};
+
+async function executeWebSearch({ query, maxResults = 5, provider = DEFAULT_SEARCH_PROVIDER, origin = null }) {
   const headers = await getInternalHeaders();
-  const res = await fetch(`${getBaseUrl()}/v1/search`, {
+  const targetUrl = origin ? `${origin}/v1/search` : `${getBaseUrl()}/v1/search`;
+  const res = await fetch(targetUrl, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -76,9 +83,10 @@ async function executeWebSearch({ query, maxResults = 5, provider = DEFAULT_SEAR
   return text.trim() || "No search results found.";
 }
 
-async function executeWebFetch({ url, provider = DEFAULT_FETCH_PROVIDER }) {
+async function executeWebFetch({ url, provider = DEFAULT_FETCH_PROVIDER, origin = null }) {
   const headers = await getInternalHeaders();
-  const res = await fetch(`${getBaseUrl()}/v1/web/fetch`, {
+  const targetUrl = origin ? `${origin}/v1/web/fetch` : `${getBaseUrl()}/v1/web/fetch`;
+  const res = await fetch(targetUrl, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -101,10 +109,12 @@ async function executeWebFetch({ url, provider = DEFAULT_FETCH_PROVIDER }) {
 }
 
 export function handleWebSearchSse(request) {
-  const { searchParams } = new URL(request.url);
+  const url = new URL(request.url);
+  const searchParams = url.searchParams;
   const searchProvider = searchParams.get("provider") || searchParams.get("searchProvider") || DEFAULT_SEARCH_PROVIDER;
   const fetchProvider = searchParams.get("fetchProvider") || searchProvider || DEFAULT_FETCH_PROVIDER;
   const sid = crypto.randomUUID();
+  const origin = url.origin;
 
   const store = getSessionStore();
   const encoder = new TextEncoder();
@@ -117,7 +127,7 @@ export function handleWebSearchSse(request) {
         } catch { /* connection dropped */ }
       };
 
-      store.set(sid, { send, searchProvider, fetchProvider });
+      store.set(sid, { send, searchProvider, fetchProvider, origin });
       controller.enqueue(encoder.encode(`event: endpoint\ndata: /api/mcp/web-search/message?sessionId=${sid}\n\n`));
     },
     cancel() {
@@ -131,6 +141,7 @@ export function handleWebSearchSse(request) {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      ...CORS_HEADERS,
     },
   });
 }
@@ -147,14 +158,14 @@ export async function handleWebSearchMessage(request) {
   } catch (err) {
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }), {
       status: 400,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
   }
 
   const { id, method, params } = body;
 
   if (method === "notifications/initialized") {
-    return new Response(null, { status: 202 });
+    return new Response(null, { status: 202, headers: CORS_HEADERS });
   }
 
   if (method === "initialize") {
@@ -164,12 +175,12 @@ export async function handleWebSearchMessage(request) {
       serverInfo: { name: "9router-web", version: "1.0.0" },
     };
     session?.send({ jsonrpc: "2.0", id, result });
-    return new Response(null, { status: 202 });
+    return new Response(null, { status: 202, headers: CORS_HEADERS });
   }
 
   if (method === "ping") {
     session?.send({ jsonrpc: "2.0", id, result: {} });
-    return new Response(null, { status: 202 });
+    return new Response(null, { status: 202, headers: CORS_HEADERS });
   }
 
   if (method === "tools/list") {
@@ -199,7 +210,7 @@ export async function handleWebSearchMessage(request) {
       },
     ];
     session?.send({ jsonrpc: "2.0", id, result: { tools } });
-    return new Response(null, { status: 202 });
+    return new Response(null, { status: 202, headers: CORS_HEADERS });
   }
 
   if (method === "tools/call") {
@@ -207,6 +218,7 @@ export async function handleWebSearchMessage(request) {
     const args = params?.arguments || {};
     const searchProvider = session?.searchProvider || DEFAULT_SEARCH_PROVIDER;
     const fetchProvider = session?.fetchProvider || DEFAULT_FETCH_PROVIDER;
+    const origin = session?.origin || null;
 
     try {
       if (toolName === "web_search" || toolName === "local_web_search" || toolName.includes("search")) {
@@ -214,12 +226,14 @@ export async function handleWebSearchMessage(request) {
           query: args.query || "",
           maxResults: args.max_results || 5,
           provider: searchProvider,
+          origin,
         });
         session?.send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
       } else if (toolName === "web_fetch" || toolName.includes("fetch")) {
         const text = await executeWebFetch({
           url: args.url || "",
           provider: fetchProvider,
+          origin,
         });
         session?.send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
       } else {
@@ -237,7 +251,7 @@ export async function handleWebSearchMessage(request) {
       });
     }
 
-    return new Response(null, { status: 202 });
+    return new Response(null, { status: 202, headers: CORS_HEADERS });
   }
 
   session?.send({
@@ -245,5 +259,5 @@ export async function handleWebSearchMessage(request) {
     id,
     error: { code: -32601, message: `Method not found: ${method}` },
   });
-  return new Response(null, { status: 202 });
+  return new Response(null, { status: 202, headers: CORS_HEADERS });
 }
