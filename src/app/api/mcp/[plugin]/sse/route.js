@@ -1,10 +1,15 @@
 import { registerSession, unregisterSession, findPlugin } from "@/lib/mcp/stdioSseBridge";
+import { isWebSearchPlugin, handleWebSearchSse } from "@/lib/mcp/webSearchMcp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request, { params }) {
   const { plugin } = await params;
+  if (isWebSearchPlugin(plugin)) {
+    return handleWebSearchSse(request);
+  }
+
   if (!findPlugin(plugin)) {
     return new Response(`Unknown plugin: ${plugin}`, { status: 404 });
   }

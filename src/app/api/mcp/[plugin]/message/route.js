@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { sendToChild, findPlugin } from "@/lib/mcp/stdioSseBridge";
+import { isWebSearchPlugin, handleWebSearchMessage } from "@/lib/mcp/webSearchMcp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request, { params }) {
   const { plugin } = await params;
+  if (isWebSearchPlugin(plugin)) {
+    return handleWebSearchMessage(request);
+  }
+
   if (!findPlugin(plugin)) {
     return NextResponse.json({ error: `Unknown plugin: ${plugin}` }, { status: 404 });
   }

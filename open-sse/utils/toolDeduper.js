@@ -15,6 +15,11 @@ const DEDUP_RULES = [
     strip: ["WebSearch", "WebFetch", "mcp__workspace__web_fetch"],
   },
   {
+    // 9Router Web Search/Fetch MCP present → drop built-in web tools.
+    triggers: [/^mcp__(9router_web|web_search)__web_(search|fetch)/],
+    strip: ["WebSearch", "WebFetch", "mcp__workspace__web_fetch"],
+  },
+  {
     // Browser MCP present → drop Cowork's duplicate Claude_in_Chrome connector.
     triggers: [/^mcp__browsermcp__/],
     strip: [/^mcp__Claude_in_Chrome__/],

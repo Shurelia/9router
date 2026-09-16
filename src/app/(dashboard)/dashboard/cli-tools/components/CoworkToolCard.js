@@ -1,12 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, Button, ManualConfigModal, ComboFormModal, McpMarketplaceModal, ModelSelectModal, Tooltip } from "@/shared/components";
 import Image from "next/image";
 import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { getProvidersByKind } from "@/shared/constants/providers";
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { arrayMove, SortableContext, useSortable, rectSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 const ENDPOINT = "/api/cli-tools/cowork-settings";
 
@@ -16,6 +20,111 @@ const ensureV1 = (url) => {
   if (!trimmed) return "";
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 };
+
+function SortableModelChip({
+  id,
+  model,
+  isDefault,
+  onRemove,
+  onEdit,
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 99 : undefined,
+  };
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(model);
+
+  useEffect(() => {
+    setDraft(model);
+  }, [model]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== model) {
+      onEdit(trimmed);
+    } else {
+      setDraft(model);
+    }
+    setEditing(false);
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") {
+      setDraft(model);
+      setEditing(false);
+    }
+  };
+
+  return (
+    <span
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-black/5 dark:bg-white/5 text-text-muted border transition-colors select-none cursor-grab active:cursor-grabbing ${
+        isDefault
+          ? "border-primary/40 bg-primary/5 text-primary font-medium"
+          : "border-transparent hover:border-border"
+      } ${isDragging ? "shadow-md ring-1 ring-primary/50" : ""}`}
+    >
+      {isDefault && (
+        <span className="text-[9px] font-bold text-primary bg-primary/10 px-1 py-0.2 rounded shrink-0">
+          Default
+        </span>
+      )}
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={handleKeyDown}
+          onClick={(e) => e.stopPropagation()}
+          className="min-w-[80px] max-w-[180px] px-1 py-0 bg-surface border border-primary/50 rounded text-xs text-text-main outline-none"
+        />
+      ) : (
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            setEditing(true);
+          }}
+          className="cursor-text hover:text-text-main"
+          title="Click to edit name, hold & drag to set default"
+        >
+          {model}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setEditing(true);
+        }}
+        className="ml-0.5 text-text-muted/60 hover:text-primary transition-colors"
+        title="Edit model name"
+      >
+        <span className="material-symbols-outlined text-[12px]">edit</span>
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(model);
+        }}
+        className="ml-0.5 text-text-muted/60 hover:text-red-500 transition-colors"
+        title="Remove model"
+      >
+        <span className="material-symbols-outlined text-[12px]">close</span>
+      </button>
+    </span>
+  );
+}
 
 export default function CoworkToolCard({
   tool,
@@ -52,6 +161,76 @@ export default function CoworkToolCard({
   const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const [addMcpOpen, setAddMcpOpen] = useState(false);
   const [addMcpForm, setAddMcpForm] = useState({ name: "", url: "" });
+  const [webCombos, setWebCombos] = useState([]);
+
+  const searchProviders = useMemo(() => getProvidersByKind("webSearch"), []);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        delay: 200,
+        tolerance: 5,
+      },
+    })
+  );
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    if (active && over && active.id !== over.id) {
+      setSelectedModels((items) => {
+        const oldIndex = items.indexOf(active.id);
+        const newIndex = items.indexOf(over.id);
+        return arrayMove(items, oldIndex, newIndex);
+      });
+    }
+  };
+
+  const handleEditModel = (index, newModel) => {
+    if (!newModel.trim()) return;
+    setSelectedModels((prev) => {
+      const next = [...prev];
+      next[index] = newModel.trim();
+      return next;
+    });
+  };
+
+  const handleWebSearchChange = (val) => {
+    let nextPlugins = plugins.filter((p) => p.name !== "exa" && p.name !== "9router-web");
+    if (val === "exa") {
+      const exaDef = (status?.defaultPlugins || []).find((d) => d.name === "exa") || {
+        name: "exa",
+        title: "Exa",
+        url: "https://mcp.exa.ai/mcp",
+        transport: "http",
+        oauth: false,
+        toolNames: ["web_search_exa", "web_fetch_exa"],
+      };
+      nextPlugins.push(exaDef);
+    } else if (val) {
+      const effectiveBaseUrl = getEffectiveBaseUrl();
+      const rootUrl = stripV1(effectiveBaseUrl) || "http://localhost:20127";
+      nextPlugins.push({
+        name: "9router-web",
+        title: `9Router Web Search (${val})`,
+        url: `${rootUrl}/api/mcp/web-search/sse?provider=${encodeURIComponent(val)}`,
+        transport: "sse",
+        oauth: false,
+        toolNames: ["web_search", "web_fetch"],
+      });
+    }
+    setPlugins(nextPlugins);
+  };
+
+  useEffect(() => {
+    fetch("/api/combos")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.combos) {
+          setWebCombos(data.combos.filter((c) => c.kind === "webSearch" || c.kind === "webFetch"));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (apiKeys?.length > 0 && !selectedApiKey) {
@@ -357,14 +536,21 @@ export default function CoworkToolCard({
                       {selectedModels.length === 0 ? (
                         <span className="text-xs text-text-muted">No models selected</span>
                       ) : (
-                        selectedModels.map((m) => (
-                          <span key={m} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-black/5 dark:bg-white/5 text-text-muted border border-transparent hover:border-border">
-                            {m}
-                            <button onClick={() => handleRemoveModel(m)} className="ml-0.5 hover:text-red-500">
-                              <span className="material-symbols-outlined text-[12px]">close</span>
-                            </button>
-                          </span>
-                        ))
+                        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                          <SortableContext items={selectedModels} strategy={rectSortingStrategy}>
+                            {selectedModels.map((m, idx) => (
+                              <SortableModelChip
+                                key={m}
+                                id={m}
+                                index={idx}
+                                model={m}
+                                isDefault={idx === 0}
+                                onRemove={handleRemoveModel}
+                                onEdit={(newVal) => handleEditModel(idx, newVal)}
+                              />
+                            ))}
+                          </SortableContext>
+                        </DndContext>
                       )}
                     </div>
                     <button onClick={() => setModelSelectOpen(true)} disabled={!hasActiveProviders} className={`shrink-0 px-2 py-1.5 rounded border text-xs whitespace-nowrap transition-colors ${hasActiveProviders ? "bg-primary/10 border-primary/40 text-primary hover:bg-primary/20 cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}>+ Model</button>
@@ -390,7 +576,7 @@ export default function CoworkToolCard({
                   <span className="material-symbols-outlined text-text-muted text-[14px] mt-2">arrow_forward</span>
                   <div className="flex-1 flex flex-col gap-1">
                     {/* Preset plugins */}
-                    {plugins.filter((p) => p.name !== "exa").map((p) => (
+                    {plugins.filter((p) => p.name !== "exa" && p.name !== "9router-web").map((p) => (
                       <div key={p.name} className="flex items-center gap-2 px-2 py-1 bg-surface rounded border border-border">
                         <span className="text-xs font-medium min-w-0 truncate flex-shrink-0">{p.title || p.name}</span>
                         {p.oauth && <span className="text-[8px] text-amber-600 shrink-0">OAuth</span>}
@@ -418,7 +604,7 @@ export default function CoworkToolCard({
                         </button>
                       </div>
                     ))}
-                    {plugins.filter((p) => p.name !== "exa").length === 0 && customPlugins.length === 0 && (
+                    {plugins.filter((p) => p.name !== "exa" && p.name !== "9router-web").length === 0 && customPlugins.length === 0 && (
                       <div className="px-2 py-1.5 bg-surface rounded border border-border text-xs text-text-muted">No MCPs added</div>
                     )}
                     {/* Actions row */}
@@ -439,24 +625,43 @@ export default function CoworkToolCard({
                   <span className="material-symbols-outlined text-text-muted text-[14px] mt-1.5">arrow_forward</span>
                   <div className="flex-1 flex flex-col gap-1.5">
                     {(() => {
-                      const exaEnabled = plugins.some((p) => p.name === "exa");
-                      const exaDef = (status?.defaultPlugins || []).find((d) => d.name === "exa");
+                      const currentWebSearchPlugin = plugins.find((p) => p.name === "exa" || p.name === "9router-web");
+                      let currentWebSearchValue = "";
+                      if (currentWebSearchPlugin?.name === "exa") {
+                        currentWebSearchValue = "exa";
+                      } else if (currentWebSearchPlugin?.name === "9router-web") {
+                        try {
+                          const u = new URL(currentWebSearchPlugin.url);
+                          currentWebSearchValue = u.searchParams.get("provider") || "ag";
+                        } catch {
+                          currentWebSearchValue = "ag";
+                        }
+                      }
                       return (
-                        <label className="flex items-start gap-2 cursor-pointer px-2 py-1.5 bg-surface rounded border border-border">
-                          <input
-                            type="checkbox"
-                            checked={exaEnabled}
-                            onChange={(e) => {
-                              if (e.target.checked && exaDef) setPlugins([...plugins.filter((p) => p.name !== "exa"), exaDef]);
-                              else setPlugins(plugins.filter((p) => p.name !== "exa"));
-                            }}
-                            className="mt-0.5"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-medium">Web Search & Fetch (Exa)</div>
-                            <p className="text-[10px] text-text-muted leading-snug">Replaces built-in WebSearch/WebFetch. Auto-strips duplicates from tool list.</p>
+                        <div className="flex flex-col gap-1.5 p-2 bg-surface rounded border border-border">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium">Web Search & Fetch</div>
+                              <p className="text-[10px] text-text-muted leading-snug">Replaces built-in WebSearch/WebFetch with 9Router or Exa MCP.</p>
+                            </div>
+                            <select
+                              value={currentWebSearchValue}
+                              onChange={(e) => handleWebSearchChange(e.target.value)}
+                              className="px-2 py-1 bg-background rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                            >
+                              <option value="">Disabled</option>
+                              <option value="exa">Exa MCP (external)</option>
+                              <optgroup label="9Router Web Search & Fetch">
+                                {searchProviders.map((p) => (
+                                  <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
+                                ))}
+                                {webCombos.map((c) => (
+                                  <option key={c.id} value={c.name}>Combo: {c.name}</option>
+                                ))}
+                              </optgroup>
+                            </select>
                           </div>
-                        </label>
+                        </div>
                       );
                     })()}
                     {(() => {
