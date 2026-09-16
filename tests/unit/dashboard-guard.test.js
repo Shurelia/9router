@@ -285,6 +285,35 @@ describe("dashboard guard local-only access", () => {
 
     expect(response).toBe(mocks.nextResponse);
   });
+
+  it("allows loopback /api/mcp/web-search without API key or JWT", async () => {
+    const response = await proxy(localRequest("/api/mcp/web-search/sse?provider=ag", {
+      host: "localhost:20128",
+    }));
+
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it("rejects remote /api/mcp/web-search without API key", async () => {
+    const response = await proxy(request("/api/mcp/web-search/sse?provider=ag", {
+      host: "router.example.com",
+    }));
+
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("API key required for remote access");
+  });
+
+  it("allows remote /api/mcp/web-search with valid API key", async () => {
+    mocks.validateApiKey.mockResolvedValue(true);
+
+    const response = await proxy(request("/api/mcp/web-search/sse?provider=ag", {
+      host: "router.example.com",
+      authorization: "Bearer sk-valid",
+    }));
+
+    expect(response).toBe(mocks.nextResponse);
+    expect(mocks.validateApiKey).toHaveBeenCalledWith("sk-valid");
+  });
 });
 
 describe("dashboard guard helpers", () => {
