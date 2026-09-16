@@ -8,6 +8,7 @@ import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { getProvidersByKind } from "@/shared/constants/providers";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_URL;
 
@@ -56,10 +57,24 @@ export default function ClaudeToolCard({
   const [showManualConfigModal, setShowManualConfigModal] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [ccFilterNaming, setCcFilterNaming] = useState(false);
-  const [exaMcpEnabled, setExaMcpEnabled] = useState(false);
+  const [webSearchProvider, setWebSearchProvider] = useState("");
+  const [webCombos, setWebCombos] = useState([]);
   const [autoCompactWindow, setAutoCompactWindow] = useState("");
   const [oneMContext, setOneMContext] = useState(false);
   const hasInitializedModels = useRef(false);
+
+  const searchProviders = useMemo(() => getProvidersByKind("webSearch"), []);
+
+  useEffect(() => {
+    fetch("/api/combos")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.combos) {
+          setWebCombos(data.combos.filter((c) => c.kind === "webSearch" || c.kind === "webFetch"));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Claude Code only string-matches the marker against the model name, so it
   // applies to any id — the user decides which models are worth declaring as 1M.
@@ -100,7 +115,11 @@ export default function ClaudeToolCard({
   useEffect(() => {
     if (initialStatus) {
       setClaudeStatus(initialStatus);
-      setExaMcpEnabled(!!initialStatus.exaMcpEnabled);
+      if (initialStatus.webSearchProvider !== undefined) {
+        setWebSearchProvider(initialStatus.webSearchProvider || "");
+      } else if (initialStatus.exaMcpEnabled) {
+        setWebSearchProvider("exa");
+      }
     }
   }, [initialStatus]);
 
@@ -178,7 +197,11 @@ export default function ClaudeToolCard({
       const res = await fetch("/api/cli-tools/claude-settings");
       const data = await res.json();
       setClaudeStatus(data);
-      setExaMcpEnabled(!!data.exaMcpEnabled);
+      if (data.webSearchProvider !== undefined) {
+        setWebSearchProvider(data.webSearchProvider || "");
+      } else if (data.exaMcpEnabled) {
+        setWebSearchProvider("exa");
+      }
     } catch (error) {
       setClaudeStatus({ installed: false, error: error.message });
     } finally {
@@ -223,14 +246,25 @@ export default function ClaudeToolCard({
       const res = await fetch("/api/cli-tools/claude-settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env, exaMcpEnabled, autoCompactWindow }),
+        body: JSON.stringify({
+          env,
+          exaMcpEnabled: webSearchProvider === "exa",
+          webSearchProvider,
+          autoCompactWindow,
+        }),
       });
       const data = await res.json();
       if (res.ok) {
         // Remember the endpoint so it stays selectable next time
         rememberEndpoint(getEffectiveBaseUrl(), { tunnelPublicUrl, tailscaleUrl });
         setMessage({ type: "success", text: "Settings applied successfully!" });
-        setClaudeStatus(prev => ({ ...prev, hasBackup: true, settings: { ...prev?.settings, env }, exaMcpEnabled }));
+        setClaudeStatus(prev => ({
+          ...prev,
+          hasBackup: true,
+          settings: { ...prev?.settings, env },
+          exaMcpEnabled: webSearchProvider === "exa",
+          webSearchProvider,
+        }));
       } else {
         setMessage({ type: "error", text: data.error || "Failed to apply settings" });
       }
@@ -251,7 +285,7 @@ export default function ClaudeToolCard({
         setMessage({ type: "success", text: "Settings reset successfully!" });
         tool.defaultModels.forEach((model) => onModelMappingChange(model.alias, model.defaultValue || ""));
         setSelectedApiKey("");
-        setExaMcpEnabled(false);
+        setWebSearchProvider("");
         setAutoCompactWindow("");
         setOneMContext(false);
       } else {
@@ -447,17 +481,31 @@ export default function ClaudeToolCard({
                   </label>
                 </div>
 
-                {/* Exa MCP — ~/.claude.json mcpServers (not settings.json) */}
+                {/* Web Search & Fetch */}
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Web Search</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                    <input type="checkbox" checked={exaMcpEnabled} onChange={(e) => setExaMcpEnabled(e.target.checked)} className="w-3.5 h-3.5 accent-primary cursor-pointer" />
-                    <span className="text-xs text-text-muted">Exa MCP</span>
-                    <Tooltip text="Injects Exa MCP into ~/.claude.json so non-Claude models gain web search. Restart Claude Code after Apply.">
+                  <div className="flex items-center gap-1.5 w-full min-w-0">
+                    <select
+                      value={webSearchProvider}
+                      onChange={(e) => setWebSearchProvider(e.target.value)}
+                      className="w-full min-w-0 px-2 py-2 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 sm:py-1.5"
+                    >
+                      <option value="">Disabled</option>
+                      <option value="exa">Exa MCP (external)</option>
+                      <optgroup label="9Router Web Search & Fetch">
+                        {searchProviders.map((p) => (
+                          <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
+                        ))}
+                        {webCombos.map((c) => (
+                          <option key={c.id} value={c.name}>Combo: {c.name}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                    <Tooltip text="Injects web search and fetch tools into Claude Code via MCP so models gain live internet access. Restart Claude Code after Apply.">
                       <span className="material-symbols-outlined text-text-muted text-[14px] cursor-help">info</span>
                     </Tooltip>
-                  </label>
+                  </div>
                 </div>
               </div>
 

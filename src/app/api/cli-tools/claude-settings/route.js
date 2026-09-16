@@ -7,7 +7,9 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { DEFAULT_PLUGINS } from "@/shared/constants/coworkPlugins";
+import { UPDATER_CONFIG } from "@/shared/constants/config";
 
+const APP_PORT = UPDATER_CONFIG.appPort || 20127;
 const execAsync = promisify(exec);
 
 // Exa MCP def — reuse from coworkPlugins (DRY).
@@ -35,7 +37,7 @@ const readClaudeJson = async () => {
   }
 };
 
-const writeClaudeJsonMcp = async (mcpServers) => {
+const writeClaudeJsonWebSearch = async (webSearchProvider, baseUrl) => {
   const filePath = getClaudeJsonPath();
   let data = {};
   try {
@@ -43,11 +45,23 @@ const writeClaudeJsonMcp = async (mcpServers) => {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  if (mcpServers && Object.keys(mcpServers).length > 0) {
-    data.mcpServers = { ...(data.mcpServers || {}), ...mcpServers };
-  } else if (data.mcpServers) {
-    delete data.mcpServers.exa;
-    if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
+  data.mcpServers = { ...(data.mcpServers || {}) };
+  delete data.mcpServers.exa;
+  delete data.mcpServers["9router-web"];
+  delete data.mcpServers["9router-search"];
+
+  if (webSearchProvider === "exa") {
+    if (EXA_PLUGIN) data.mcpServers.exa = buildExaMcpEntry();
+  } else if (webSearchProvider) {
+    const rootUrl = (baseUrl || `http://localhost:${APP_PORT}`).replace(/\/v1\/?$/, "");
+    data.mcpServers["9router-web"] = {
+      type: "sse",
+      url: `${rootUrl}/api/mcp/web-search/sse?provider=${encodeURIComponent(webSearchProvider)}`,
+    };
+  }
+
+  if (Object.keys(data.mcpServers).length === 0) {
+    delete data.mcpServers;
   }
   await fs.writeFile(filePath, JSON.stringify(data, null, 2));
 };
@@ -103,12 +117,24 @@ export async function GET() {
     const settings = await readSettings();
     const has9Router = !!(settings?.env?.ANTHROPIC_BASE_URL);
     const claudeJson = await readClaudeJson();
+    let webSearchProvider = "";
+    if (claudeJson?.mcpServers?.exa) {
+      webSearchProvider = "exa";
+    } else if (claudeJson?.mcpServers?.["9router-web"]?.url) {
+      try {
+        const u = new URL(claudeJson.mcpServers["9router-web"].url);
+        webSearchProvider = u.searchParams.get("provider") || "ag";
+      } catch {
+        webSearchProvider = "ag";
+      }
+    }
 
     return NextResponse.json({
       installed: true,
       settings: settings,
       has9Router: has9Router,
-      exaMcpEnabled: !!claudeJson?.mcpServers?.exa,
+      exaMcpEnabled: !!claudeJson?.mcpServers?.exa || !!webSearchProvider,
+      webSearchProvider,
       settingsPath: getClaudeSettingsPath(),
     });
   } catch (error) {
@@ -123,8 +149,8 @@ export async function GET() {
 // POST - Backup old fields and write new settings
 export async function POST(request) {
   try {
-    const { env, exaMcpEnabled, autoCompactWindow } = await request.json();
-    
+    const { env, exaMcpEnabled, webSearchProvider, autoCompactWindow } = await request.json();
+
     if (!env || typeof env !== "object") {
       return NextResponse.json(
         { error: "Invalid env object" },
@@ -151,8 +177,8 @@ export async function POST(request) {
 
     // Normalize ANTHROPIC_BASE_URL to ensure /v1 suffix
     if (env.ANTHROPIC_BASE_URL) {
-      env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL.endsWith("/v1") 
-        ? env.ANTHROPIC_BASE_URL 
+      env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL.endsWith("/v1")
+        ? env.ANTHROPIC_BASE_URL
         : `${env.ANTHROPIC_BASE_URL}/v1`;
     }
 
@@ -178,10 +204,11 @@ export async function POST(request) {
     // Write new settings
     await fs.writeFile(settingsPath, JSON.stringify(newSettings, null, 2));
 
-    // Exa MCP toggle — write to ~/.claude.json (CLI reads mcpServers from here).
-    if (EXA_PLUGIN) {
-      await writeClaudeJsonMcp(exaMcpEnabled ? { exa: buildExaMcpEntry() } : null);
-    }
+    // Web Search / Fetch MCP configuration — write to ~/.claude.json
+    const chosenProvider = webSearchProvider !== undefined
+      ? webSearchProvider
+      : (exaMcpEnabled ? "exa" : "");
+    await writeClaudeJsonWebSearch(chosenProvider, env.ANTHROPIC_BASE_URL);
 
     return NextResponse.json({
       success: true,
@@ -239,8 +266,8 @@ export async function DELETE() {
       }
     }
 
-    // Remove injected MCP servers (Exa) from ~/.claude.json
-    await writeClaudeJsonMcp(null);
+    // Remove injected MCP servers (Exa or 9Router web search) from ~/.claude.json
+    await writeClaudeJsonWebSearch("");
 
     // Write updated settings
     await fs.writeFile(settingsPath, JSON.stringify(currentSettings, null, 2));
