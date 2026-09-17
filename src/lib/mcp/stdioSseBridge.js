@@ -1,7 +1,7 @@
 // Inline stdio<->SSE bridge for MCP. Spawns one child per plugin on demand,
 // broadcasts JSON-RPC frames over SSE, accepts client messages via HTTP POST.
 
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 const crypto = require("crypto");
 const { LOCAL_STDIO_PLUGINS } = require("../../shared/constants/coworkPlugins");
 
@@ -10,6 +10,43 @@ const MAX_TEXT_CHARS = 50000;
 const COLLAPSE_THRESHOLD = 30;
 const COLLAPSE_KEEP_HEAD = 10;
 const COLLAPSE_KEEP_TAIL = 5;
+const IDLE_TIMEOUT_MS = 30_000;
+
+function freePort(port) {
+  if (!port) return;
+  try {
+    if (process.platform === "win32") {
+      const out = execSync("netstat -ano -p tcp", { encoding: "utf8", windowsHide: true, timeout: 3000 });
+      const pids = new Set();
+      for (const line of out.split("\n")) {
+        if (line.includes(`:${port}`) && line.includes("LISTENING")) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (pid && !isNaN(pid) && pid !== "0" && pid !== String(process.pid)) pids.add(pid);
+        }
+      }
+      for (const pid of pids) {
+        try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 }); } catch {}
+      }
+    } else {
+      execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { stdio: "ignore", timeout: 3000 });
+    }
+  } catch {}
+}
+
+function killProcess(proc) {
+  if (!proc) return;
+  const pid = proc.pid;
+  try {
+    if (process.platform === "win32" && pid) {
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true, timeout: 3000 });
+    } else {
+      proc.kill("SIGKILL");
+    }
+  } catch {
+    try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+  }
+}
 
 // Drop noise nodes, collapse repeated siblings, hard-truncate. Preserve [ref=eXX].
 function smartFilterText(text) {
@@ -114,6 +151,10 @@ function getOrSpawn(name) {
   const plugin = findPlugin(name);
   if (!plugin) throw new Error(`Unknown local plugin: ${name}`);
 
+  if (plugin.port) {
+    freePort(plugin.port);
+  }
+
   const isWin = process.platform === "win32";
   const cmd = isWin && plugin.command === "npx" ? "npx.cmd" : plugin.command;
 
@@ -130,7 +171,7 @@ function getOrSpawn(name) {
     return null;
   }
 
-  entry = { proc, sessions: new Map(), buffer: "" };
+  entry = { proc, sessions: new Map(), buffer: "", idleTimer: null };
   store.set(name, entry);
 
   proc.on("error", (err) => {
@@ -158,7 +199,13 @@ function getOrSpawn(name) {
     }
   });
 
-  proc.stderr?.on("data", (d) => console.log(`[mcp:${name}]`, d.toString().trim()));
+  proc.stderr?.on("data", (d) => {
+    const text = d.toString().trim();
+    if (!text) return;
+    // Suppress upstream @browsermcp/mcp harmless netstat/findstr exit-1 stderr log on start
+    if (text.includes("Failed to kill process on port") && text.includes("findstr")) return;
+    console.log(`[mcp:${name}]`, text);
+  });
   proc.on("exit", (code) => {
     console.log(`[mcp:${name}] exited`, code);
     store.delete(name);
@@ -167,9 +214,31 @@ function getOrSpawn(name) {
   return entry;
 }
 
+function killBridge(name, entry) {
+  if (!entry) return;
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+  }
+  if (entry.proc) {
+    entry.proc.removeAllListeners("exit");
+    entry.proc.removeAllListeners("error");
+    killProcess(entry.proc);
+  }
+  const plugin = findPlugin(name);
+  if (plugin?.port) {
+    freePort(plugin.port);
+  }
+  getStore().delete(name);
+}
+
 function registerSession(name, sendFn) {
   const entry = getOrSpawn(name);
   if (!entry) return null;
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+  }
   const sid = crypto.randomUUID();
   entry.sessions.set(sid, sendFn);
   return sid;
@@ -179,10 +248,15 @@ function unregisterSession(name, sid) {
   const entry = getStore().get(name);
   if (!entry) return;
   entry.sessions.delete(sid);
-  // No sessions left → kill child to avoid idle orphan process leak.
+  // Grace period before killing child to prevent rapid spawn/kill thrashing
   if (entry.sessions.size === 0) {
-    try { entry.proc.kill(); } catch { /* ignore */ }
-    getStore().delete(name);
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.idleTimer = setTimeout(() => {
+      const current = getStore().get(name);
+      if (current === entry && current.sessions.size === 0) {
+        killBridge(name, entry);
+      }
+    }, IDLE_TIMEOUT_MS);
   }
 }
 
@@ -190,8 +264,7 @@ function unregisterSession(name, sid) {
 function killAllBridges() {
   const store = getStore();
   for (const [name, entry] of store) {
-    try { entry.proc.kill(); } catch { /* ignore */ }
-    store.delete(name);
+    killBridge(name, entry);
   }
 }
 
