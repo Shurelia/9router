@@ -29,6 +29,7 @@ const LOCAL_STDIO_PLUGINS = [
     extensionUrl: "https://chromewebstore.google.com/detail/browser-mcp-automate-your/bjfgambnhccakkhmkepdoekmckoijdlc",
     command: "npx",
     args: ["-y", "@browsermcp/mcp@latest"],
+    port: 9009,
     toolNames: ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_screenshot", "browser_get_console_logs", "browser_wait", "browser_press_key", "browser_go_back", "browser_go_forward"],
   },
 ];
