@@ -86,12 +86,18 @@ async function executeWebSearch({ query, maxResults = 5, provider = DEFAULT_SEAR
 async function executeWebFetch({ url, provider = DEFAULT_FETCH_PROVIDER, origin = null }) {
   const headers = await getInternalHeaders();
   const targetUrl = origin ? `${origin}/v1/web/fetch` : `${getBaseUrl()}/v1/web/fetch`;
+
+  let cleanUrl = (url || "").trim();
+  if (cleanUrl && !/^https?:\/\//i.test(cleanUrl)) {
+    cleanUrl = `https://${cleanUrl}`;
+  }
+
   const res = await fetch(targetUrl, {
     method: "POST",
     headers,
     body: JSON.stringify({
       model: provider,
-      url,
+      url: cleanUrl,
     }),
     signal: AbortSignal.timeout(20000),
   });
@@ -105,14 +111,25 @@ async function executeWebFetch({ url, provider = DEFAULT_FETCH_PROVIDER, origin 
     throw new Error(msg);
   }
 
-  return data?.content || data?.text || rawText || "No content extracted.";
+  const contentText = typeof data?.content === "object" ? data.content.text : (data?.content || data?.text || rawText);
+  let resultText = "";
+  if (data?.title) {
+    resultText += `# ${data.title}\n\n`;
+  }
+  resultText += (contentText || "No content extracted.");
+  return resultText.trim();
 }
 
 export function handleWebSearchSse(request) {
   const url = new URL(request.url);
   const searchParams = url.searchParams;
-  const searchProvider = searchParams.get("provider") || searchParams.get("searchProvider") || DEFAULT_SEARCH_PROVIDER;
-  const fetchProvider = searchParams.get("fetchProvider") || searchProvider || DEFAULT_FETCH_PROVIDER;
+  const legacyProvider = searchParams.get("provider") || "";
+  const searchProvider = searchParams.get("searchProvider") !== null
+    ? (searchParams.get("searchProvider") || "")
+    : legacyProvider;
+  const fetchProvider = searchParams.get("fetchProvider") !== null
+    ? (searchParams.get("fetchProvider") || "")
+    : (searchParams.has("searchProvider") ? "" : (legacyProvider ? DEFAULT_FETCH_PROVIDER : ""));
   const sid = crypto.randomUUID();
   const origin = url.origin;
 
@@ -184,8 +201,12 @@ export async function handleWebSearchMessage(request) {
   }
 
   if (method === "tools/list") {
-    const tools = [
-      {
+    const tools = [];
+    const searchProvider = session?.searchProvider;
+    const fetchProvider = session?.fetchProvider;
+
+    if (searchProvider) {
+      tools.push({
         name: "web_search",
         description: "Search the web for real-time information, news, documentation, and current events.",
         inputSchema: {
@@ -196,8 +217,11 @@ export async function handleWebSearchMessage(request) {
           },
           required: ["query"],
         },
-      },
-      {
+      });
+    }
+
+    if (fetchProvider) {
+      tools.push({
         name: "web_fetch",
         description: "Fetch and extract text content from a web page URL.",
         inputSchema: {
@@ -207,8 +231,9 @@ export async function handleWebSearchMessage(request) {
           },
           required: ["url"],
         },
-      },
-    ];
+      });
+    }
+
     session?.send({ jsonrpc: "2.0", id, result: { tools } });
     return new Response(null, { status: 202, headers: CORS_HEADERS });
   }
@@ -216,12 +241,15 @@ export async function handleWebSearchMessage(request) {
   if (method === "tools/call") {
     const toolName = params?.name || "";
     const args = params?.arguments || {};
-    const searchProvider = session?.searchProvider || DEFAULT_SEARCH_PROVIDER;
-    const fetchProvider = session?.fetchProvider || DEFAULT_FETCH_PROVIDER;
+    const searchProvider = session?.searchProvider;
+    const fetchProvider = session?.fetchProvider;
     const origin = session?.origin || null;
 
     try {
       if (toolName === "web_search" || toolName === "local_web_search" || toolName.includes("search")) {
+        if (!searchProvider) {
+          throw new Error("Web search tool is disabled or not configured.");
+        }
         const text = await executeWebSearch({
           query: args.query || "",
           maxResults: args.max_results || 5,
@@ -230,6 +258,9 @@ export async function handleWebSearchMessage(request) {
         });
         session?.send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
       } else if (toolName === "web_fetch" || toolName.includes("fetch")) {
+        if (!fetchProvider) {
+          throw new Error("Web fetch tool is disabled or not configured.");
+        }
         const text = await executeWebFetch({
           url: args.url || "",
           provider: fetchProvider,

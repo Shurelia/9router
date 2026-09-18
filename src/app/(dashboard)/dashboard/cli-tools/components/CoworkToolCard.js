@@ -151,6 +151,7 @@ export default function CoworkToolCard({
   const [selectedModels, setSelectedModels] = useState([]);
   const [oneMContext, setOneMContext] = useState(false);
   const [webSearchProvider, setWebSearchProvider] = useState("");
+  const [webFetchProvider, setWebFetchProvider] = useState("");
   const [showManualConfigModal, setShowManualConfigModal] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [plugins, setPlugins] = useState([]);
@@ -165,6 +166,9 @@ export default function CoworkToolCard({
   const [webCombos, setWebCombos] = useState([]);
 
   const searchProviders = useMemo(() => getProvidersByKind("webSearch"), []);
+  const fetchProviders = useMemo(() => getProvidersByKind("webFetch"), []);
+  const searchCombos = useMemo(() => webCombos.filter((c) => c.kind === "webSearch"), [webCombos]);
+  const fetchCombos = useMemo(() => webCombos.filter((c) => c.kind === "webFetch"), [webCombos]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -240,6 +244,9 @@ export default function CoworkToolCard({
     }
     if (status?.cowork?.webSearchProvider !== undefined) {
       setWebSearchProvider(status.cowork.webSearchProvider || "");
+    }
+    if (status?.cowork?.webFetchProvider !== undefined) {
+      setWebFetchProvider(status.cowork.webFetchProvider || "");
     }
     // Initialize plugins: from current config, fallback to defaultPlugins
     if (Array.isArray(status?.cowork?.plugins) && status.cowork.plugins.length > 0) {
@@ -321,6 +328,7 @@ export default function CoworkToolCard({
           localPlugins,
           customPlugins: customPlugins.filter((p) => p.name !== "9router-web" && p.name !== "web-search" && p.name !== "exa"),
           webSearchProvider,
+          webFetchProvider,
         }),
       });
       const data = await res.json();
@@ -387,6 +395,7 @@ export default function CoworkToolCard({
         setSelectedModels([]);
         setOneMContext(false);
         setWebSearchProvider("");
+        setWebFetchProvider("");
         setPlugins(status?.defaultPlugins || []);
         setLocalPlugins([]);
         setCustomPlugins([]);
@@ -607,12 +616,12 @@ export default function CoworkToolCard({
                   <span className="w-32 shrink-0 text-sm font-semibold text-text-main text-right pt-1">Tools</span>
                   <span className="material-symbols-outlined text-text-muted text-[14px] mt-1.5">arrow_forward</span>
                   <div className="flex-1 flex flex-col gap-1.5">
-                    {/* Web Search & Fetch */}
+                    {/* Web Search */}
                     <div className="flex flex-col gap-1.5 p-2 bg-surface rounded border border-border">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="text-xs font-medium">Web Search & Fetch</div>
-                          <p className="text-[10px] text-text-muted leading-snug">Replaces built-in WebSearch/WebFetch with 9Router or Exa MCP.</p>
+                          <div className="text-xs font-medium">Web Search</div>
+                          <p className="text-[10px] text-text-muted leading-snug">Live web search queries using 9Router or Exa MCP.</p>
                         </div>
                         <select
                           value={webSearchProvider}
@@ -621,11 +630,36 @@ export default function CoworkToolCard({
                         >
                           <option value="">Disabled</option>
                           <option value="exa">Exa MCP (external)</option>
-                          <optgroup label="9Router Web Search & Fetch">
+                          <optgroup label="9Router Web Search">
                             {searchProviders.map((p) => (
                               <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
                             ))}
-                            {webCombos.map((c) => (
+                            {searchCombos.map((c) => (
+                              <option key={c.id} value={c.name}>Combo: {c.name}</option>
+                            ))}
+                          </optgroup>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Web Fetch */}
+                    <div className="flex flex-col gap-1.5 p-2 bg-surface rounded border border-border">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium">Web Fetch</div>
+                          <p className="text-[10px] text-text-muted leading-snug">URL content extraction using 9Router Web Fetch providers.</p>
+                        </div>
+                        <select
+                          value={webFetchProvider}
+                          onChange={(e) => setWebFetchProvider(e.target.value)}
+                          className="px-2 py-1 bg-background rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                        >
+                          <option value="">Disabled</option>
+                          <optgroup label="9Router Web Fetch">
+                            {fetchProviders.map((p) => (
+                              <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
+                            ))}
+                            {fetchCombos.map((c) => (
                               <option key={c.id} value={c.name}>Combo: {c.name}</option>
                             ))}
                           </optgroup>

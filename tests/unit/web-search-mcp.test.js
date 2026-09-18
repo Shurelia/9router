@@ -66,16 +66,73 @@ describe("Web Search & Fetch MCP server and tool deduplication", () => {
     await reader.cancel();
   });
 
-  it("dedupes built-in WebSearch and WebFetch when 9router web search MCP is present", () => {
-    const tools = [
+  it("exposes only web_fetch when searchProvider is omitted", async () => {
+    const reqSse = new Request("http://localhost:20127/api/mcp/web-search/sse?searchProvider=&fetchProvider=exa");
+    const resSse = handleWebSearchSse(reqSse);
+    const reader = resSse.body.getReader();
+    const decoder = new TextDecoder();
+    const { value } = await reader.read();
+    const text = decoder.decode(value);
+    const match = text.match(/sessionId=([a-zA-Z0-9-]+)/);
+    const sid = match[1];
+
+    const listReq = new Request(`http://localhost:20127/api/mcp/web-search/message?sessionId=${sid}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    await handleWebSearchMessage(listReq);
+
+    const listChunk = await reader.read();
+    const listText = decoder.decode(listChunk.value);
+    expect(listText).toContain('"name":"web_fetch"');
+    expect(listText).not.toContain('"name":"web_search"');
+
+    await reader.cancel();
+  });
+
+  it("exposes only web_search when fetchProvider is omitted", async () => {
+    const reqSse = new Request("http://localhost:20127/api/mcp/web-search/sse?searchProvider=ag&fetchProvider=");
+    const resSse = handleWebSearchSse(reqSse);
+    const reader = resSse.body.getReader();
+    const decoder = new TextDecoder();
+    const { value } = await reader.read();
+    const text = decoder.decode(value);
+    const match = text.match(/sessionId=([a-zA-Z0-9-]+)/);
+    const sid = match[1];
+
+    const listReq = new Request(`http://localhost:20127/api/mcp/web-search/message?sessionId=${sid}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    await handleWebSearchMessage(listReq);
+
+    const listChunk = await reader.read();
+    const listText = decoder.decode(listChunk.value);
+    expect(listText).toContain('"name":"web_search"');
+    expect(listText).not.toContain('"name":"web_fetch"');
+
+    await reader.cancel();
+  });
+
+  it("dedupes built-in WebSearch and WebFetch independently", () => {
+    const searchOnly = [
       { name: "mcp__9router_web__web_search" },
       { name: "WebSearch" },
       { name: "WebFetch" },
-      { name: "Bash" },
     ];
-    const { tools: deduped, stripped } = dedupeTools(tools);
-    expect(stripped).toContain("WebSearch");
-    expect(stripped).toContain("WebFetch");
-    expect(deduped.map((t) => t.name)).toEqual(["mcp__9router_web__web_search", "Bash"]);
+    const { tools: dedupedSearch, stripped: strippedSearch } = dedupeTools(searchOnly);
+    expect(strippedSearch).toEqual(["WebSearch"]);
+    expect(dedupedSearch.map((t) => t.name)).toEqual(["mcp__9router_web__web_search", "WebFetch"]);
+
+    const fetchOnly = [
+      { name: "mcp__9router_web__web_fetch" },
+      { name: "WebSearch" },
+      { name: "WebFetch" },
+    ];
+    const { tools: dedupedFetch, stripped: strippedFetch } = dedupeTools(fetchOnly);
+    expect(strippedFetch).toEqual(["WebFetch"]);
+    expect(dedupedFetch.map((t) => t.name)).toEqual(["mcp__9router_web__web_fetch", "WebSearch"]);
   });
 });
