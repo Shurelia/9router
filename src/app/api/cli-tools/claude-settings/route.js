@@ -37,7 +37,7 @@ const readClaudeJson = async () => {
   }
 };
 
-const writeClaudeJsonWebSearch = async (webSearchProvider, baseUrl) => {
+const writeClaudeJsonWebSearch = async (webSearchProvider, webFetchProvider, baseUrl) => {
   const filePath = getClaudeJsonPath();
   let data = {};
   try {
@@ -52,11 +52,19 @@ const writeClaudeJsonWebSearch = async (webSearchProvider, baseUrl) => {
 
   if (webSearchProvider === "exa") {
     if (EXA_PLUGIN) data.mcpServers.exa = buildExaMcpEntry();
-  } else if (webSearchProvider) {
+  }
+
+  const searchParam = webSearchProvider && webSearchProvider !== "exa" ? webSearchProvider : "";
+  const fetchParam = webFetchProvider || "";
+
+  if (searchParam || fetchParam) {
     const rootUrl = (baseUrl || `http://localhost:${APP_PORT}`).replace(/\/v1\/?$/, "");
+    const params = new URLSearchParams();
+    if (searchParam) params.set("searchProvider", searchParam);
+    if (fetchParam) params.set("fetchProvider", fetchParam);
     data.mcpServers["9router-web"] = {
       type: "sse",
-      url: `${rootUrl}/api/mcp/web-search/sse?provider=${encodeURIComponent(webSearchProvider)}`,
+      url: `${rootUrl}/api/mcp/web-search/sse?${params.toString()}`,
     };
   }
 
@@ -118,12 +126,18 @@ export async function GET() {
     const has9Router = !!(settings?.env?.ANTHROPIC_BASE_URL);
     const claudeJson = await readClaudeJson();
     let webSearchProvider = "";
+    let webFetchProvider = "";
     if (claudeJson?.mcpServers?.exa) {
       webSearchProvider = "exa";
-    } else if (claudeJson?.mcpServers?.["9router-web"]?.url) {
+    }
+    const webMcp = claudeJson?.mcpServers?.["9router-web"];
+    if (webMcp?.url) {
       try {
-        const u = new URL(claudeJson.mcpServers["9router-web"].url);
-        webSearchProvider = u.searchParams.get("provider") || "ag";
+        const u = new URL(webMcp.url);
+        if (!webSearchProvider) {
+          webSearchProvider = u.searchParams.get("searchProvider") || u.searchParams.get("provider") || "";
+        }
+        webFetchProvider = u.searchParams.get("fetchProvider") || "";
       } catch {
         webSearchProvider = "ag";
       }
@@ -135,6 +149,7 @@ export async function GET() {
       has9Router: has9Router,
       exaMcpEnabled: !!claudeJson?.mcpServers?.exa || !!webSearchProvider,
       webSearchProvider,
+      webFetchProvider,
       settingsPath: getClaudeSettingsPath(),
     });
   } catch (error) {
@@ -149,7 +164,7 @@ export async function GET() {
 // POST - Backup old fields and write new settings
 export async function POST(request) {
   try {
-    const { env, exaMcpEnabled, webSearchProvider, autoCompactWindow } = await request.json();
+    const { env, exaMcpEnabled, webSearchProvider, webFetchProvider, autoCompactWindow } = await request.json();
 
     if (!env || typeof env !== "object") {
       return NextResponse.json(
@@ -205,10 +220,11 @@ export async function POST(request) {
     await fs.writeFile(settingsPath, JSON.stringify(newSettings, null, 2));
 
     // Web Search / Fetch MCP configuration — write to ~/.claude.json
-    const chosenProvider = webSearchProvider !== undefined
+    const chosenSearch = webSearchProvider !== undefined
       ? webSearchProvider
       : (exaMcpEnabled ? "exa" : "");
-    await writeClaudeJsonWebSearch(chosenProvider, env.ANTHROPIC_BASE_URL);
+    const chosenFetch = webFetchProvider || "";
+    await writeClaudeJsonWebSearch(chosenSearch, chosenFetch, env.ANTHROPIC_BASE_URL);
 
     return NextResponse.json({
       success: true,
@@ -267,7 +283,7 @@ export async function DELETE() {
     }
 
     // Remove injected MCP servers (Exa or 9Router web search) from ~/.claude.json
-    await writeClaudeJsonWebSearch("");
+    await writeClaudeJsonWebSearch("", "");
 
     // Write updated settings
     await fs.writeFile(settingsPath, JSON.stringify(currentSettings, null, 2));

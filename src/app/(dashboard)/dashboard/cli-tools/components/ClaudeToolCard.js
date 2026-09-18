@@ -58,12 +58,16 @@ export default function ClaudeToolCard({
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [ccFilterNaming, setCcFilterNaming] = useState(false);
   const [webSearchProvider, setWebSearchProvider] = useState("");
+  const [webFetchProvider, setWebFetchProvider] = useState("");
   const [webCombos, setWebCombos] = useState([]);
   const [autoCompactWindow, setAutoCompactWindow] = useState("");
   const [oneMContext, setOneMContext] = useState(false);
   const hasInitializedModels = useRef(false);
 
   const searchProviders = useMemo(() => getProvidersByKind("webSearch"), []);
+  const fetchProviders = useMemo(() => getProvidersByKind("webFetch"), []);
+  const searchCombos = useMemo(() => webCombos.filter((c) => c.kind === "webSearch"), [webCombos]);
+  const fetchCombos = useMemo(() => webCombos.filter((c) => c.kind === "webFetch"), [webCombos]);
 
   useEffect(() => {
     fetch("/api/combos")
@@ -119,6 +123,9 @@ export default function ClaudeToolCard({
         setWebSearchProvider(initialStatus.webSearchProvider || "");
       } else if (initialStatus.exaMcpEnabled) {
         setWebSearchProvider("exa");
+      }
+      if (initialStatus.webFetchProvider !== undefined) {
+        setWebFetchProvider(initialStatus.webFetchProvider || "");
       }
     }
   }, [initialStatus]);
@@ -202,6 +209,9 @@ export default function ClaudeToolCard({
       } else if (data.exaMcpEnabled) {
         setWebSearchProvider("exa");
       }
+      if (data.webFetchProvider !== undefined) {
+        setWebFetchProvider(data.webFetchProvider || "");
+      }
     } catch (error) {
       setClaudeStatus({ installed: false, error: error.message });
     } finally {
@@ -250,6 +260,7 @@ export default function ClaudeToolCard({
           env,
           exaMcpEnabled: webSearchProvider === "exa",
           webSearchProvider,
+          webFetchProvider,
           autoCompactWindow,
         }),
       });
@@ -264,6 +275,7 @@ export default function ClaudeToolCard({
           settings: { ...prev?.settings, env },
           exaMcpEnabled: webSearchProvider === "exa",
           webSearchProvider,
+          webFetchProvider,
         }));
       } else {
         setMessage({ type: "error", text: data.error || "Failed to apply settings" });
@@ -286,6 +298,7 @@ export default function ClaudeToolCard({
         tool.defaultModels.forEach((model) => onModelMappingChange(model.alias, model.defaultValue || ""));
         setSelectedApiKey("");
         setWebSearchProvider("");
+        setWebFetchProvider("");
         setAutoCompactWindow("");
         setOneMContext(false);
       } else {
@@ -481,7 +494,7 @@ export default function ClaudeToolCard({
                   </label>
                 </div>
 
-                {/* Web Search & Fetch */}
+                {/* Web Search */}
                 <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
                   <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Web Search</span>
                   <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
@@ -493,16 +506,42 @@ export default function ClaudeToolCard({
                     >
                       <option value="">Disabled</option>
                       <option value="exa">Exa MCP (external)</option>
-                      <optgroup label="9Router Web Search & Fetch">
+                      <optgroup label="9Router Web Search">
                         {searchProviders.map((p) => (
                           <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
                         ))}
-                        {webCombos.map((c) => (
+                        {searchCombos.map((c) => (
                           <option key={c.id} value={c.name}>Combo: {c.name}</option>
                         ))}
                       </optgroup>
                     </select>
-                    <Tooltip text="Injects web search and fetch tools into Claude Code via MCP so models gain live internet access. Restart Claude Code after Apply.">
+                    <Tooltip text="Injects web search tool into Claude Code via MCP for live internet searches. Restart Claude Code after Apply.">
+                      <span className="material-symbols-outlined text-text-muted text-[14px] cursor-help">info</span>
+                    </Tooltip>
+                  </div>
+                </div>
+
+                {/* Web Fetch */}
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">Web Fetch</span>
+                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
+                  <div className="flex items-center gap-1.5 w-full min-w-0">
+                    <select
+                      value={webFetchProvider}
+                      onChange={(e) => setWebFetchProvider(e.target.value)}
+                      className="w-full min-w-0 px-2 py-2 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 sm:py-1.5"
+                    >
+                      <option value="">Disabled</option>
+                      <optgroup label="9Router Web Fetch">
+                        {fetchProviders.map((p) => (
+                          <option key={p.id} value={p.alias || p.id}>{p.name} ({p.alias || p.id})</option>
+                        ))}
+                        {fetchCombos.map((c) => (
+                          <option key={c.id} value={c.name}>Combo: {c.name}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                    <Tooltip text="Injects web fetch (URL content scraper) tool into Claude Code via MCP. Restart Claude Code after Apply.">
                       <span className="material-symbols-outlined text-text-muted text-[14px] cursor-help">info</span>
                     </Tooltip>
                   </div>

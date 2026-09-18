@@ -276,20 +276,21 @@ export async function GET() {
       .filter((m) => !MANAGED_MCP_NAMES.has(m.name) && (m.custom || (typeof m.url === "string" && !m.url.includes("/api/mcp/"))))
       .map((m) => ({ name: m.name, url: m.url, transport: m.transport, custom: true }));
 
-    // Detect web search provider
+    // Detect web search and web fetch providers
     let webSearchProvider = "";
+    let webFetchProvider = "";
     if (managedMcp.some((m) => m.name === "exa")) {
       webSearchProvider = "exa";
-    } else {
-      const webMcp = managedMcp.find((m) => m.name === "9router-web" || m.name === "web-search");
-      if (webMcp?.url) {
-        try {
-          const u = new URL(webMcp.url);
-          webSearchProvider = u.searchParams.get("provider") || "ag";
-        } catch {
-          webSearchProvider = "ag";
+    }
+    const webMcp = managedMcp.find((m) => m.name === "9router-web" || m.name === "web-search");
+    if (webMcp?.url) {
+      try {
+        const u = new URL(webMcp.url);
+        if (!webSearchProvider) {
+          webSearchProvider = u.searchParams.get("searchProvider") || u.searchParams.get("provider") || "";
         }
-      }
+        webFetchProvider = u.searchParams.get("fetchProvider") || "";
+      } catch {}
     }
 
     return NextResponse.json({
@@ -320,6 +321,7 @@ export async function GET() {
         localPlugins: activeLocalNames,
         customPlugins: activeCustomPlugins,
         webSearchProvider,
+        webFetchProvider,
       },
       defaultPlugins: DEFAULT_PLUGINS,
       localStdioPlugins: LOCAL_STDIO_PLUGINS,
@@ -332,7 +334,7 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const { baseUrl, apiKey, models, plugins, localPlugins, customPlugins, webSearchProvider } = await request.json();
+    const { baseUrl, apiKey, models, plugins, localPlugins, customPlugins, webSearchProvider, webFetchProvider } = await request.json();
 
     if (!baseUrl || !apiKey) {
       return NextResponse.json({ error: "baseUrl and apiKey are required" }, { status: 400 });
@@ -355,14 +357,27 @@ export async function POST(request) {
     if (effectiveWebSearch === "exa") {
       const exaDef = DEFAULT_PLUGINS.find((d) => d.name === "exa");
       if (exaDef) pluginsArray.push(exaDef);
-    } else if (effectiveWebSearch) {
+    }
+
+    const searchParam = effectiveWebSearch && effectiveWebSearch !== "exa" ? effectiveWebSearch : "";
+    const fetchParam = webFetchProvider || "";
+
+    if (searchParam || fetchParam) {
+      const params = new URLSearchParams();
+      if (searchParam) params.set("searchProvider", searchParam);
+      if (fetchParam) params.set("fetchProvider", fetchParam);
+
+      const toolNames = [];
+      if (searchParam) toolNames.push("web_search");
+      if (fetchParam) toolNames.push("web_fetch");
+
       pluginsArray.push({
         name: "9router-web",
-        title: `9Router Web Search (${effectiveWebSearch})`,
-        url: `${rootUrl}/api/mcp/web-search/sse?provider=${encodeURIComponent(effectiveWebSearch)}`,
+        title: `9Router Web Search & Fetch`,
+        url: `${rootUrl}/api/mcp/web-search/sse?${params.toString()}`,
         transport: "sse",
         oauth: false,
-        toolNames: ["web_search", "web_fetch"],
+        toolNames,
       });
     }
 
