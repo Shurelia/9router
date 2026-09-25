@@ -234,7 +234,8 @@ describe("Antigravity CCA Protocol & Tool Schema Normalizer", () => {
       expect(transformed.project).toBe("test-companion-project-123");
       expect(transformed.model).toBe("gemini-3.8-flash-high");
       expect(transformed.userAgent).toBe("antigravity");
-      expect(transformed.requestType).toBe("agent");
+      // Official Antigravity client omits requestType on the agent (chat) path to avoid false 429
+      expect(transformed.requestType).toBeUndefined();
       expect(transformed.sessionId).toBeUndefined();
       expect(transformed.request.sessionId).toBeDefined();
       expect(transformed.request.sessionId).toMatch(/^-?\d+$/);
