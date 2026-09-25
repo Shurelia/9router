@@ -281,9 +281,11 @@ function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigra
     }
   };
 
-  // Antigravity specific fields
+  // Antigravity specific fields.
+  // NOTE: the official Antigravity client omits `requestType` entirely on the
+  // agent (chat) path. Sending `requestType: "agent"` triggers a detail-free
+  // 429 RESOURCE_EXHAUSTED even with quota available.
   if (isAntigravity) {
-    envelope.requestType = "agent";
     const contentCount = Array.isArray(geminiCLI.contents) ? geminiCLI.contents.length : 1;
     const stepIndex = Math.max(1, contentCount * 2 - 1);
     const trajectoryId = generateUUID();
@@ -329,7 +331,8 @@ function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = nu
     project: projectId,
     model: model,
     userAgent: "antigravity",
-    requestType: "agent",
+    // NOTE: official Antigravity client omits `requestType` on the agent (chat)
+    // path — see the note in wrapInCloudCodeEnvelope() above.
     request: {
       sessionId,
       contents: [],
