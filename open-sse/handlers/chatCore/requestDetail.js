@@ -61,6 +61,21 @@ export function extractUsageFromResponse(responseBody) {
     };
   }
 
+  // Ollama format: prompt_eval_count/eval_count at top level (not nested under usage).
+  // prompt_eval_cached_count is a cache-read subset of prompt_eval_count (cache-INCLUSIVE).
+  if (responseBody.done === true &&
+      (responseBody.prompt_eval_count !== undefined || responseBody.eval_count !== undefined)) {
+    const prompt = responseBody.prompt_eval_count || 0;
+    const completion = responseBody.eval_count || 0;
+    const cached = responseBody.prompt_eval_cached_count || 0;
+    return {
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      total_tokens: prompt + completion,
+      cached_tokens: cached
+    };
+  }
+
   return null;
 }
 
@@ -84,10 +99,10 @@ export function buildRequestDetail(base, overrides = {}) {
 
 // Build the "done" summary: duration, ttft, in/out tokens with cache breakdown
 export function formatDoneLine({ usage, latency }) {
-  const u = usage || {};
+  const u = canonicalizeUsage(usage) || usage || {};
   const inTok = u.prompt_tokens ?? u.input_tokens ?? 0;
   const outTok = u.completion_tokens ?? u.output_tokens ?? 0;
-  const cacheRead = u.cache_read_input_tokens ?? u.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
+  const cacheRead = u.cached_tokens ?? u.cache_read_input_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
   const cacheCreate = u.cache_creation_input_tokens ?? 0;
   let inStr = `IN ${inTok}`;
   if (cacheRead || cacheCreate) {

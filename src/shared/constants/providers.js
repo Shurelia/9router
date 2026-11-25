@@ -1,6 +1,6 @@
 // Provider definitions
 import REGISTRY from "open-sse/providers/registry/index.js";
-import { RISK_NOTICE } from "@/shared/constants/providersDisplay";
+import { RISK_NOTICE } from "@/shared/constants/providersDisplay.js";
 
 const MEDIA_ENTRY_KEYS = [
   "serviceKinds", "ttsConfig", "sttConfig", "embeddingConfig",
@@ -35,6 +35,8 @@ function buildProviderEntry(r) {
     ...(r.authModes ? { authModes: r.authModes } : {}),
     ...(r.authType ? { authType: r.authType } : {}),
     ...(r.authHint ? { authHint: r.authHint } : {}),
+    ...(r.apiKeyOptionalWith ? { apiKeyOptionalWith: r.apiKeyOptionalWith } : {}),
+    ...(r.credentialForm ? { credentialForm: r.credentialForm } : {}),
   };
 }
 
@@ -156,7 +158,7 @@ export function getProvidersByKind(kind) {
     .sort((a, b) => (a.priority ?? a.mediaPriority ?? 999) - (b.priority ?? b.mediaPriority ?? 999));
 }
 
-// Derive từ registry features flags
+// Derived from registry feature flags
 export const USAGE_SUPPORTED_PROVIDERS = REGISTRY
   .filter(r => r.features?.usage)
   .map(r => r.id);

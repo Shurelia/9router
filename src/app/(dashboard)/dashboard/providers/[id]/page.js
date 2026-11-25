@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, ZedAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -13,7 +13,7 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
-import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { applyQoderModelNames, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -23,8 +23,20 @@ import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
+import CustomConfigCard from "./CustomConfigCard";
+import AutoPingScheduleModal from "./AutoPingScheduleModal";
+import WebLoginButton, { WEB_LOGIN_PROVIDERS } from "../components/WebLoginButton.js";
+import MinimaxLeaseButton from "../components/MinimaxLeaseButton.js";
+import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
+
+const MCODE_LEASE_PROVIDERS = new Set(["minimax-code", "minimax-code-global"]);
+
+// Providers whose registry list is only an offline fallback: the dashboard
+// renders the live per-connection catalog from GET /api/providers/[id]/models
+// when one resolves, and falls back to the static rows otherwise.
+const LIVE_MODEL_CATALOG_PROVIDERS = new Set(["cursor", "zed", "claude", "commandcode", "antigravity"]);
 
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
@@ -68,7 +80,8 @@ export default function ProviderDetailPage() {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
-  const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
+  const [autoPing, setAutoPing] = useState({ enabled: false, connections: {}, schedules: {} });
+  const [scheduleConnection, setScheduleConnection] = useState(null);
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [liveModels, setLiveModels] = useState([]);
   // Live-catalog fetch warning/error (surfaced for zed only; cursor behavior unchanged).
@@ -155,9 +168,9 @@ export default function ProviderDetailPage() {
   const supportsApiKeyAuth = !!APIKEY_PROVIDERS[providerId] || authModes.includes("apikey");
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
   const staticModels = getModelsByProviderId(providerId);
-  const models = (providerId === "cursor" || providerId === "zed") && liveModels.length > 0
+  const models = LIVE_MODEL_CATALOG_PROVIDERS.has(providerId) && liveModels.length > 0
     ? liveModels
-    : staticModels;
+    : applyQoderModelNames(staticModels, customModels, getProviderAlias(providerId));
   const providerAlias = getProviderAlias(providerId);
   
   const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
@@ -329,7 +342,7 @@ export default function ProviderDetailPage() {
       setThinkingMode(thinkingCfg.mode || "auto");
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
-      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
+      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {}, schedules: apCfg.schedules || {} });
       if (nodesRes.ok) {
         let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
 
@@ -458,8 +471,12 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleAutoPingConnection = (connectionId, on) => {
-    saveAutoPing({ ...autoPing, connections: { ...autoPing.connections, [connectionId]: on } });
+  const handleSaveAutoPing = (connectionId, { reactive, schedule }) => {
+    saveAutoPing({
+      ...autoPing,
+      connections: { ...autoPing.connections, [connectionId]: reactive },
+      schedules: { ...autoPing.schedules, [connectionId]: schedule },
+    });
   };
 
   useEffect(() => {
@@ -474,7 +491,7 @@ export default function ProviderDetailPage() {
   // the provider id or connection list changes — no polling, no loop.
   // Cursor path is statement-identical to before; zed adds error surfacing.
   useEffect(() => {
-    const isLiveCatalog = providerId === "cursor" || providerId === "zed";
+    const isLiveCatalog = LIVE_MODEL_CATALOG_PROVIDERS.has(providerId);
     if (!isLiveCatalog) {
       setLiveModels([]);
       return;
@@ -552,12 +569,14 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps) => {
+  // `transport` pins a realtime STT dispatch marker (shared whitelist
+  // STT_TRANSPORT_META); the API only honours it on type "stt" records.
+  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps, transport) => {
     try {
       const res = await fetch("/api/models/custom", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerAlias: providerAliasOverride, id: modelId, type, ...(caps ? { caps } : {}) }),
+        body: JSON.stringify({ providerAlias: providerAliasOverride, id: modelId, type, ...(caps ? { caps } : {}), ...(transport ? { transport } : {}) }),
       });
       if (res.ok) {
         await fetchCustomModels();
@@ -604,6 +623,26 @@ export default function ProviderDetailPage() {
       const models = data.models || [];
       if (models.length === 0) {
         alert(translate("No models returned"));
+        return;
+      }
+
+      if (providerId === "qoder" || providerId === "qoder-cn") {
+        for (const model of models) {
+          const id = model.id?.replace(/^(qoder-cn|qoder)\//, "");
+          if (!id) continue;
+          const saved = await fetch("/api/models/custom", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ providerAlias: providerStorageAlias, id, type: "llm", name: model.name || id }),
+          });
+          if (!saved.ok) {
+            const error = await saved.json();
+            throw new Error(error.error || "Failed to save model");
+          }
+        }
+        await fetchCustomModels();
+        window.dispatchEvent(new CustomEvent("customModelChanged"));
+        alert(translate("Successfully updated") + ` ${models.length} ` + translate("models"));
         return;
       }
 
@@ -1039,9 +1078,12 @@ export default function ProviderDetailPage() {
                 onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
                 autoPing={AUTO_PING_SETTINGS_KEYS[providerId] && conn.authType === "oauth" ? {
-                  on: autoPing.connections[conn.id] === true,
-                  onToggle: (on) => handleAutoPingConnection(conn.id, on),
+                  isActive: autoPing.connections[conn.id] === true || autoPing.schedules?.[conn.id]?.enabled === true,
+                  reactiveOn: autoPing.connections[conn.id] === true,
                   provider: providerId,
+                  scheduleOn: autoPing.schedules?.[conn.id]?.enabled === true,
+                  scheduleSummary: getScheduleSlotLabels(autoPing.schedules?.[conn.id]).join(" / "),
+                  onConfigure: () => setScheduleConnection(conn),
                 } : null}
                 onUpdateProxy={async (proxyPoolId) => {
                   try {
@@ -1608,6 +1650,12 @@ export default function ProviderDetailPage() {
                   </>
                 ) : (
                   <>
+                    {!isCompatible && WEB_LOGIN_PROVIDERS.has(providerId) && (
+                      <WebLoginButton providerId={providerId} onConnected={fetchConnections} />
+                    )}
+                    {!isCompatible && MCODE_LEASE_PROVIDERS.has(providerId) && (
+                      <MinimaxLeaseButton providerId={providerId} onConnected={fetchConnections} />
+                    )}
                     {!isCompatible && providerId === "iflow" && (
                       <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
                         Cookie
@@ -1668,6 +1716,12 @@ export default function ProviderDetailPage() {
               {connectionsList}
               {!isCompatible && (
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
+                  {WEB_LOGIN_PROVIDERS.has(providerId) && (
+                    <WebLoginButton providerId={providerId} onConnected={fetchConnections} />
+                  )}
+                  {MCODE_LEASE_PROVIDERS.has(providerId) && (
+                    <MinimaxLeaseButton providerId={providerId} onConnected={fetchConnections} />
+                  )}
                   {providerId === "iflow" && (
                     <Button
                       size="sm"
@@ -1740,6 +1794,9 @@ export default function ProviderDetailPage() {
           )}
         </Card>
       )}
+
+      {/* Per-provider user overrides (custom headers / connect timeout) */}
+      <CustomConfigCard providerId={providerId} />
 
       {/* Models */}
       <Card>
@@ -1834,6 +1891,13 @@ export default function ProviderDetailPage() {
           onSuccess={handleOAuthSuccess}
           onClose={() => setShowOAuthModal(false)}
         />
+      ) : providerId === "zed" ? (
+        <ZedAuthModal
+          isOpen={showOAuthModal}
+          providerInfo={providerInfo}
+          onSuccess={handleOAuthSuccess}
+          onClose={() => setShowOAuthModal(false)}
+        />
       ) : providerId === "gitlab" ? (
         <GitLabAuthModal
           isOpen={showOAuthModal}
@@ -1904,8 +1968,8 @@ export default function ProviderDetailPage() {
           isOpen={showAddCustomModel}
           providerAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
-          onSave={async (modelId, caps) => {
-            await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps);
+          onSave={async (modelId, type, caps, transport) => {
+            await handleAddCustomModel(modelId, type, providerStorageAlias, caps, transport);
             setShowAddCustomModel(false);
           }}
           onClose={() => setShowAddCustomModel(false)}
@@ -1925,6 +1989,17 @@ export default function ProviderDetailPage() {
           isOpen={showBulkImportGrokCli}
           onClose={() => setShowBulkImportGrokCli(false)}
           onSuccess={fetchConnections}
+        />
+      )}
+
+      {scheduleConnection && (
+        <AutoPingScheduleModal
+          isOpen={!!scheduleConnection}
+          onClose={() => setScheduleConnection(null)}
+          connection={scheduleConnection}
+          reactive={autoPing.connections[scheduleConnection.id] === true}
+          schedule={autoPing.schedules?.[scheduleConnection.id] || null}
+          onSave={(result) => handleSaveAutoPing(scheduleConnection.id, result)}
         />
       )}
 

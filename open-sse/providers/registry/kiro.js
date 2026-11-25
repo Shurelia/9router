@@ -29,8 +29,6 @@ export default {
     headers: {
       "Content-Type": "application/json",
       Accept: "application/vnd.amazon.eventstream",
-      "User-Agent": "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-      "X-Amz-User-Agent": "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
     },
     tokenUrl: "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
     authUrl: "https://prod.us-east-1.auth.desktop.kiro.dev",
@@ -41,7 +39,13 @@ export default {
     },
   },
   models: [
-    // Opus (added per kiro.dev/changelog/models and kiro.dev/docs/models)
+    // Opus 5.5 — experimental preview, 1M context, 2x credits (#4410)
+    // Announced 2026-09-22; confirmed in kiro.dev session UI.
+    { id: "claude-opus-5.5", name: "Claude Opus 5.5" },
+    { id: "claude-opus-5.5-thinking", name: "Claude Opus 5.5 (Thinking)" },
+    { id: "claude-opus-5.5-agentic", name: "Claude Opus 5.5 (Agentic)" },
+    { id: "claude-opus-5.5-thinking-agentic", name: "Claude Opus 5.5 (Thinking + Agentic)" },
+    // Opus 5
     { id: "claude-opus-5", name: "Claude Opus 5" },
     { id: "claude-opus-5-thinking", name: "Claude Opus 5 (Thinking)" },
     { id: "claude-opus-5-agentic", name: "Claude Opus 5 (Agentic)" },

@@ -23,6 +23,13 @@ const ALIAS_TOKENS = [
   "af","airforce","api-airforce","llm7","llm-7","samba","sambanova","bm","bluesminds",
   "bzl","bazaarlink","kgw","kilo-gateway","hunyuan","tencent","qianfan","baidu","ernie",
   "dv","devin","devin-cli","morph","morphllm",
+  "muse","muse-ai","meta-model-api",
+  "muse-code","muse-subscription",
+  "br","bedrock","aws-bedrock",
+  "brx","bedrock-xai","bedrock-grok",
+  "nous","nous-portal","nous-research","ns",
+  "odg","opendesign","opendesign-go","dr","relay","deeprelay",
+  "qc","qctp","qwencloud","qwen-cloud",
 ];
 
 // Sort idToAlias by key — runtime accesses by key, order is irrelevant (content-based)

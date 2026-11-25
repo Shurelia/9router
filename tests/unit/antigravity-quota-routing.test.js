@@ -60,7 +60,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("skips exhausted account/model and selects the next account", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -81,7 +80,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("reports retry time when every account is cache-blocked", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -99,7 +97,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("lets account back into rotation once reset time has passed", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-01T00:00:01.000Z"));
@@ -117,7 +114,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("coalesces concurrent quota refreshes for one account", async () => {
     let resolveUsage;
     mocks.getAntigravityUsage.mockReturnValue(new Promise(resolve => { resolveUsage = resolve; }));
@@ -170,7 +166,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("strike-breaks after 3 optimistic 429s within 60s and cache-blocks 15 minutes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -191,7 +186,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("resets the strike counter when strikes fall outside the 60s window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -209,7 +203,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("strike-breaks when the quota API is unavailable (null reading) too", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -225,7 +218,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("persists the block into the shared cache so the next request skips the pair", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -252,7 +244,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("clears strike state and the synthesized block after a successful request", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -277,7 +268,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("anchors the window at the first strike: 3 strikes spread over 90s do not trip", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -297,7 +287,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("keeps the optimistic path null without touching the quota cache", async () => {
     mocks.getAntigravityUsage.mockResolvedValue({ quotas: {
       [MODEL]: { remainingPercentage: 90, resetAt: FUTURE_RESET },
@@ -345,7 +334,6 @@ describe("Antigravity quota-aware routing", () => {
       vi.useRealTimers();
     }
   });
-
   it("findAntigravityQuota matches weekly quotas for Free tier and exhausted weekly pools", () => {
     const freeTierQuotas = {
       "gemini_weekly": { displayName: "Gemini (Weekly)", remainingPercentage: 0, resetAt: FUTURE_RESET },
@@ -378,6 +366,89 @@ describe("Antigravity quota-aware routing", () => {
           "modelLock_gpt-oss-120b-medium": FUTURE_RESET,
         })
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("checks shared family summary quota (claude_gpt_session / weekly)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
+    mocks.getAntigravityUsage.mockResolvedValue({
+      quotas: {
+        claude_gpt_session: { remainingPercentage: 0, resetAt: FUTURE_RESET },
+        claude_gpt_weekly: { remainingPercentage: 50, resetAt: "2026-09-02T00:00:00.000Z" },
+      }
+    });
+
+    try {
+      const reset = await handleAntigravityQuotaError("ag-family", 429, "claude-sonnet-5-5", "token", {});
+      expect(reset).toBe(Date.parse(FUTURE_RESET));
+      expect(getAntigravityQuotaCache().get("ag-family")["claude-sonnet-5-5"]).toMatchObject({
+        remainingPercentage: 0,
+        resetAt: FUTURE_RESET,
+      });
+
+      // auth pre-filter should skip this account for claude-sonnet-5-5 based on cache
+      mocks.getProviderConnections.mockResolvedValue([
+        { id: "ag-family", email: "family@example.com", isActive: true },
+        { id: "ag-other", email: "other@example.com", isActive: true },
+      ]);
+      const creds = await getProviderCredentials("antigravity", null, "claude-sonnet-5-5");
+      expect(creds.connectionId).toBe("ag-other");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("checks shared family summary quota for gemini models", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
+    mocks.getAntigravityUsage.mockResolvedValue({
+      quotas: {
+        gemini_weekly: { remainingPercentage: 0, resetAt: FUTURE_RESET },
+      }
+    });
+
+    try {
+      const reset = await handleAntigravityQuotaError("ag-gem", 429, "gemini-3.8-flash-high", "token", {});
+      expect(reset).toBe(Date.parse(FUTURE_RESET));
+      expect(getAntigravityQuotaCache().get("ag-gem")["gemini-3.8-flash-high"]).toMatchObject({
+        remainingPercentage: 0,
+        resetAt: FUTURE_RESET,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("checks separate gemini_argon_weekly summary quota for Gemini 4 Argon models without blocking other Gemini models", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
+    mocks.getAntigravityUsage.mockResolvedValue({
+      quotas: {
+        gemini_argon_weekly: { remainingPercentage: 0, resetAt: FUTURE_RESET },
+        gemini_weekly: { remainingPercentage: 100, resetAt: "2026-09-02T00:00:00.000Z" },
+        gemini_session: { remainingPercentage: 100, resetAt: "2026-08-26T05:00:00.000Z" },
+      }
+    });
+
+    try {
+      const reset = await handleAntigravityQuotaError("ag-argon", 429, "gemini-4-argon-low", "token", {});
+      expect(reset).toBe(Date.parse(FUTURE_RESET));
+      expect(getAntigravityQuotaCache().get("ag-argon")["gemini-4-argon-low"]).toMatchObject({
+        remainingPercentage: 0,
+        resetAt: FUTURE_RESET,
+      });
+
+      mocks.getProviderConnections.mockResolvedValue([
+        { id: "ag-argon", email: "argon@example.com", isActive: true },
+        { id: "ag-other", email: "other@example.com", isActive: true },
+      ]);
+      // Exhausted for Argon -> routes to ag-other
+      const argonCreds = await getProviderCredentials("antigravity", null, "gemini-4-argon-high");
+      expect(argonCreds.connectionId).toBe("ag-other");
+
+      // Still healthy for regular Gemini 3.8 Flash -> routes to ag-argon
+      const flashCreds = await getProviderCredentials("antigravity", null, "gemini-3.8-flash-high");
+      expect(flashCreds.connectionId).toBe("ag-argon");
     } finally {
       vi.useRealTimers();
     }

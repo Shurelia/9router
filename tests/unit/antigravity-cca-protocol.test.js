@@ -167,19 +167,18 @@ describe("Antigravity CCA Protocol & Tool Schema Normalizer", () => {
     it("configures primary and automatic failover SSE endpoints in registry", () => {
       expect(antigravityRegistry.transport.baseUrls).toEqual([
         "https://daily-cloudcode-pa.googleapis.com",
-        "https://daily-cloudcode-pa.sandbox.googleapis.com",
       ]);
       expect(antigravityRegistry.oauth.loadCodeAssistEndpoint).toBe(
-        "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+        "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
       );
       expect(antigravityRegistry.oauth.onboardUserEndpoint).toBe(
-        "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser"
+        "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
       );
       expect(CLOUD_CODE_API.antigravity.loadCodeAssist).toBe(
-        "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+        "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
       );
       expect(CLOUD_CODE_API.antigravity.onboardUser).toBe(
-        "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser"
+        "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
       );
     });
 
@@ -254,7 +253,7 @@ describe("Antigravity CCA Protocol & Tool Schema Normalizer", () => {
 
       // generationConfig sanitized
       expect(transformed.request.generationConfig.thinkingLevel).toBeUndefined();
-      expect(transformed.request.generationConfig.maxOutputTokens).toBe(8192);
+      expect(transformed.request.generationConfig.maxOutputTokens).toBe(16000);
       expect(transformed.request.generationConfig.temperature).toBe(0.7);
 
       // toolConfig mode VALIDATED

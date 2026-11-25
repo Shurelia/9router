@@ -53,6 +53,24 @@ const PROVIDER_MODELS = {
     { id: "glm-4.7" },
   ],
   ag: [
+    { id: "gemini-4-carbon-high" },
+    { id: "gemini-4-carbon-medium" },
+    { id: "gemini-4-carbon-low" },
+    { id: "gemini-4-carbon" },
+    { id: "gemini-4-argon-high" },
+    { id: "gemini-4-argon-medium" },
+    { id: "gemini-4-argon-low" },
+    { id: "gemini-4-argon" },
+    { id: "gemini-4-neon-xhigh" },
+    { id: "gemini-4-neon-high" },
+    { id: "gemini-4-neon-medium" },
+    { id: "gemini-4-neon-low" },
+    { id: "gemini-4-neon" },
+    { id: "gemini-4-hydrogen-xhigh" },
+    { id: "gemini-4-hydrogen-high" },
+    { id: "gemini-4-hydrogen-medium" },
+    { id: "gemini-4-hydrogen-low" },
+    { id: "gemini-4-hydrogen" },
     { id: "gemini-3.8-flash-high" },
     { id: "gemini-3.8-flash-medium" },
     { id: "gemini-3.8-flash-low" },
@@ -67,6 +85,16 @@ const PROVIDER_MODELS = {
     { id: "gemini-3.5-flash-extra-low" },
     { id: "gemini-pro-agent" },
     { id: "gemini-3.1-pro-low" },
+    { id: "claude-sonnet-5-5" },
+    { id: "claude-sonnet-5-5-low" },
+    { id: "claude-sonnet-5-5-medium" },
+    { id: "claude-sonnet-5-5-high" },
+    { id: "claude-sonnet-5-5-max" },
+    { id: "claude-opus-5-5" },
+    { id: "claude-opus-5-5-low" },
+    { id: "claude-opus-5-5-medium" },
+    { id: "claude-opus-5-5-high" },
+    { id: "claude-opus-5-5-max" },
     { id: "claude-sonnet-4-6" },
     { id: "claude-opus-4-6-thinking" },
     { id: "gpt-oss-120b-medium" },
@@ -104,6 +132,7 @@ const PROVIDER_MODELS = {
     { id: "claude-3-5-sonnet-20241022" },
   ],
   gemini: [
+    { id: "gemini-4-hydrogen" },
     { id: "gemini-3.8-flash" },
     { id: "gemini-3.7-flash" },
     { id: "gemini-3.6-flash" },
@@ -138,11 +167,12 @@ const OAUTH_PROVIDERS = {
   iflow: { id: "iflow", alias: "if", name: "iFlow AI" },
   qwen: { id: "qwen", alias: "qw", name: "Qwen Code" },
   kiro: { id: "kiro", alias: "kr", name: "Kiro AI" },
+  glm: { id: "glm", alias: "glm", name: "Zai GLM Coding" },
 };
 
 const APIKEY_PROVIDERS = {
   openrouter: { id: "openrouter", name: "OpenRouter" },
-  glm: { id: "glm", name: "GLM Coding" },
+  glm: { id: "glm", name: "Zai GLM Coding" },
   minimax: { id: "minimax", name: "Minimax Coding" },
   kimi: { id: "kimi", name: "Kimi" },
   openai: { id: "openai", name: "OpenAI" },
@@ -399,7 +429,7 @@ async function showConnectionActions(connection, providerId, breadcrumb = []) {
  * @param {string} authType - "oauth" or "apikey"
  */
 // Providers that use Device Code Flow (terminal-based polling)
-const DEVICE_CODE_PROVIDERS = ["github", "qwen", "kiro"];
+const DEVICE_CODE_PROVIDERS = ["github", "qwen", "kiro", "glm"];
 
 /**
  * Handle adding new connection - auto-detect flow type

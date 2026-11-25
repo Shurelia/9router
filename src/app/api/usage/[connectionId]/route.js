@@ -3,10 +3,12 @@ import "open-sse/index.js";
 
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getUsageForProvider } from "open-sse/services/usage.js";
+import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { syncAntigravityQuotaLocksToDb } from "@/sse/services/antigravityQuota.js";
+import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -22,6 +24,11 @@ function isAuthExpiredMessage(usage) {
  * @returns Promise<{ connection, refreshed: boolean }>
  */
 export async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+  // Re-read latest tokens: OpenAI rotates the refresh token on every refresh, and
+  // refreshing with a stale snapshot (reuse) revokes the whole session → account logout.
+  const latest = connection.id ? await getProviderConnectionById(connection.id) : null;
+  if (latest) connection = latest;
+
   const executor = getExecutor(connection.provider);
 
   // Build credentials object from connection
@@ -47,6 +54,11 @@ export async function refreshAndUpdateCredentials(connection, force = false, pro
 
   // Use executor's refreshCredentials method (with optional proxy)
   const refreshResult = await executor.refreshCredentials(credentials, console, proxyOptions);
+
+  // Refresh token reused/invalidated — token family is revoked; do not continue with the dead token.
+  if (refreshResult && isUnrecoverableRefreshError(refreshResult)) {
+    throw new Error("Refresh token invalid or reused. Please re-authorize the connection.");
+  }
 
   if (!refreshResult) {
     // Refresh failed but we still have an accessToken — try with existing token
@@ -141,8 +153,10 @@ export async function GET(request, { params }) {
       connection.authType === "apikey" || connection.authType === "api_key";
     const isApikeyEligible =
       isApikeyAuth && USAGE_APIKEY_PROVIDERS.includes(connection.provider);
+    // Lease connections borrow the desktop app's token inside the usage handler.
+    const isLease = isLeaseConnection(connection);
 
-    if (!isOAuth && !isApikeyEligible) {
+    if (!isOAuth && !isApikeyEligible && !isLease) {
       return Response.json({ message: "Usage not available for this connection" });
     }
 

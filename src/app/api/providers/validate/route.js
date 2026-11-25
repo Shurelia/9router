@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
+import { ACCEPT_ENCODING } from "open-sse/utils/zstdCompat.js";
 import { getProviderNodeById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
 import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
+import { buildCommandCodeHeaders } from "open-sse/shared/commandCodeHeaders.js";
 import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/qoderModels.js";
+import { probeBedrockCredentials } from "open-sse/executors/bedrock.js";
+import {
+  createNousApiKeyProbe,
+  getNousApiKeyValidationError,
+  isNousApiKeyAccepted,
+} from "open-sse/services/nous.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
@@ -89,7 +97,11 @@ export async function POST(request) {
     const { apiKey, providerSpecificData } = body;
 
     const isNoAuth = AI_PROVIDERS[provider]?.noAuth === true;
-    if (!provider || (!apiKey && provider !== "ollama-local" && !isNoAuth)) {
+    // Same exemption as the create route: a provider can name a providerSpecificData field
+    // that replaces the API key (Bedrock's `profile`), so validating that setup must not 400.
+    const apiKeySubstitute = AI_PROVIDERS[provider]?.apiKeyOptionalWith;
+    const hasApiKeySubstitute = !!(apiKeySubstitute && providerSpecificData?.[apiKeySubstitute]);
+    if (!provider || (!apiKey && provider !== "ollama-local" && !isNoAuth && !hasApiKeySubstitute)) {
       return NextResponse.json({ error: "Provider and API key required" }, { status: 400 });
     }
 
@@ -234,6 +246,12 @@ export async function POST(request) {
         });
       }
 
+      // AWS-signed providers (Bedrock) have no bearer key for the generic probes below, which
+      // would reject bedrock outright and send bedrock-xai to a literal "{region}" host.
+      if (AI_PROVIDERS[provider]?.credentialForm === "aws") {
+        return NextResponse.json(await probeBedrockCredentials({ apiKey, providerSpecificData }, fetch));
+      }
+
       // Generic probe for webSearch/webFetch providers (config-driven)
       const webResult = await probeWebProvider(provider, apiKey);
       if (webResult !== null) {
@@ -253,6 +271,21 @@ export async function POST(request) {
       }
 
       switch (provider) {
+        case "fal-ai": {
+          // Match saved-connection tests: check auth without queueing a paid image.
+          const res = await fetch("https://api.fal.ai/v1/models?limit=1", {
+            headers: { Authorization: `Key ${apiKey}` },
+            signal: AbortSignal.timeout(8000),
+          });
+          isValid = res.ok;
+          if (!isValid) {
+            error = res.status === 401 || res.status === 403
+              ? "Invalid API key"
+              : `Unable to verify API key (Fal returned ${res.status})`;
+          }
+          break;
+        }
+
         case "openai":
           const openaiRes = await fetch("https://api.openai.com/v1/models", {
             headers: { "Authorization": `Bearer ${apiKey}` },
@@ -296,6 +329,19 @@ export async function POST(request) {
           isValid = openrouterRes.ok;
           break;
 
+
+        case "nous": {
+          // Nous exposes /models publicly, so a models request cannot validate
+          // the Portal key. Use the smallest authenticated inference instead.
+          const probe = createNousApiKeyProbe(apiKey);
+          const res = await fetch(probe.url, {
+            ...probe.options,
+            signal: AbortSignal.timeout(8000),
+          });
+          isValid = isNousApiKeyAccepted(res.status);
+          if (!isValid) error = getNousApiKeyValidationError(res.status);
+          break;
+        }
         case "glm":
         case "glm-cn":
         case "kimi":
@@ -369,6 +415,8 @@ export async function POST(request) {
         case "assemblyai":
         case "nanobanana":
         case "chutes":
+        case "runcrate":
+        case "synthetic":
         case "xiaomi-mimo":
         case "xiaomi-tokenplan":
         case "nvidia": {
@@ -396,9 +444,11 @@ export async function POST(request) {
         }
 
         case "opencode-go": {
-          const res = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
+          // ponytail: session id derived from key hash so validate looks like a normal session; upgrade path = per-request session from executor
+          const sessionId = "validate-" + (await import("node:crypto")).createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+          const res = await fetch("https://opencode.ai/inference/go/openai/v1/chat/completions", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}`, "x-opencode-session": sessionId },
             body: JSON.stringify({
               model: getDefaultModel("opencode-go"),
               messages: [{ role: "user", content: "ping" }],
@@ -420,12 +470,7 @@ export async function POST(request) {
           }, false);
           const res = await fetch(cfg.baseUrl, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...(cfg.headers || {}),
-              "x-session-id": crypto.randomUUID(),
-              "Authorization": `Bearer ${apiKey}`,
-            },
+            headers: buildCommandCodeHeaders({ apiKey, sessionId: payload.threadId }),
             body: JSON.stringify(payload),
           });
           isValid = res.status !== 401 && res.status !== 403;
@@ -505,7 +550,7 @@ export async function POST(request) {
             method: "POST",
             headers: {
               Accept: "*/*",
-              "Accept-Encoding": "gzip, deflate, br, zstd",
+              "Accept-Encoding": ACCEPT_ENCODING,
               "Accept-Language": "en-US,en;q=0.9",
               "Cache-Control": "no-cache",
               "Content-Type": "application/json",

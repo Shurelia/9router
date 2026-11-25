@@ -122,7 +122,7 @@ describe("Web Search & Fetch MCP server and tool deduplication", () => {
       { name: "WebSearch" },
       { name: "WebFetch" },
     ];
-    const { tools: dedupedSearch, stripped: strippedSearch } = dedupeTools(searchOnly);
+    const { tools: dedupedSearch, stripped: strippedSearch } = dedupeTools(searchOnly, { clientTool: "claude" });
     expect(strippedSearch).toEqual(["WebSearch"]);
     expect(dedupedSearch.map((t) => t.name)).toEqual(["mcp__9router_web__web_search", "WebFetch"]);
 
@@ -131,7 +131,7 @@ describe("Web Search & Fetch MCP server and tool deduplication", () => {
       { name: "WebSearch" },
       { name: "WebFetch" },
     ];
-    const { tools: dedupedFetch, stripped: strippedFetch } = dedupeTools(fetchOnly);
+    const { tools: dedupedFetch, stripped: strippedFetch } = dedupeTools(fetchOnly, { clientTool: "claude" });
     expect(strippedFetch).toEqual(["WebFetch"]);
     expect(dedupedFetch.map((t) => t.name)).toEqual(["mcp__9router_web__web_fetch", "WebSearch"]);
   });
